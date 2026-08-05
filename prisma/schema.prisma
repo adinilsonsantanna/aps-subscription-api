@@ -20,6 +20,9 @@ model Shop {
   name               String
   domain             String   @unique
 
+  accessToken String @db.Text
+  scopes      String @db.Text
+
   gateway            String   @default("mercado_pago")
 
   isActive           Boolean  @default(true)
