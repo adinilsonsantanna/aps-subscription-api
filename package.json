@@ -8,6 +8,9 @@
     "test": "tests"
   },
   "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -24,6 +27,7 @@
   "homepage": "https://github.com/adinilsonsantanna/aps-subscription-api#readme",
   "dependencies": {
     "@prisma/client": "^6.19.3",
+    "@shopify/shopify-api": "^13.1.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "prisma": "^6.19.3"
@@ -32,6 +36,6 @@
     "@types/express": "^5.0.6",
     "@types/node": "^26.1.2",
     "ts-node-dev": "^2.0.0",
-    "typescript": "^7.0.2"
+    "typescript": "^5.6.3"
   }
 }
