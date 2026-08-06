@@ -1,99 +1,65 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
-  url = env("DATABASE_URL")
+  url      = env("DATABASE_URL")
 }
 
 model Shop {
-  id                 String   @id @default(cuid())
-
-  shopifyShopId      String?  @unique
-  name               String
-  domain             String   @unique
-
-  accessToken String @db.Text
-  scopes      String @db.Text
-
-  gateway            String   @default("mercado_pago")
-
-  isActive           Boolean  @default(true)
-
+  id            String   @id @default(cuid())
+  shopifyShopId String?  @unique
+  name          String
+  domain        String   @unique
+  accessToken   String   @db.Text
+  scopes        String   @db.Text
+  gateway       String   @default("mercado_pago")
+  isActive      Boolean  @default(true)
   subscriptions Subscription[]
-  
-  webhooks WebhookEvent[]
-
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  webhooks      WebhookEvent[]
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 }
 
 model Subscription {
-  id                 String   @id @default(cuid())
-
-  shopId             String
-  shop               Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
-
-  orders SubscriptionOrder[]
-
-  shopifyCustomerId  String
-  shopifyProductId   String
-  shopifyVariantId   String
-
-  gateway            String
-
-  externalId         String?
-
-  status             String   @default("active")
-
-  interval           Int
-  intervalType       String
-
-  nextBillingAt      DateTime
-
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  id                String   @id @default(cuid())
+  shopId            String
+  shop              Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  orders            SubscriptionOrder[]
+  shopifyCustomerId String
+  shopifyProductId  String
+  shopifyVariantId  String
+  gateway           String
+  externalId        String?
+  status            String   @default("active")
+  interval          Int
+  intervalType      String
+  nextBillingAt     DateTime
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 }
 
 model SubscriptionOrder {
-  id                 String   @id @default(cuid())
-
-  subscriptionId     String
-  subscription       Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
-
-  shopifyOrderId     String?
-
-  gatewayOrderId     String?
-
-  amount             Decimal  @db.Decimal(10,2)
-
-  status             String
-
-  processedAt        DateTime?
-
-  createdAt          DateTime @default(now())
+  id             String   @id @default(cuid())
+  subscriptionId String
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  shopifyOrderId String?
+  gatewayOrderId String?
+  amount         Decimal  @db.Decimal(10,2)
+  status         String
+  processedAt    DateTime?
+  createdAt      DateTime @default(now())
 }
 
 model WebhookEvent {
-  id          String   @id @default(cuid())
-
-  shopId      String
-  shop        Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
-
-  source      String
-  eventId     String   @unique
-  topic       String
-
-  payload     Json
-
-  processed   Boolean  @default(false)
-
-  createdAt   DateTime @default(now())
+  id        String   @id @default(cuid())
+  shopId    String
+  shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  source    String
+  eventId   String   @unique
+  topic     String
+  payload   Json
+  processed Boolean  @default(false)
+  createdAt DateTime @default(now())
 }
