@@ -23,3 +23,6 @@ build/
 # Prisma
 prisma/dev.db
 /src/generated/prisma
+
+.vercel
+.env*
