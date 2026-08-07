@@ -14,13 +14,21 @@ export class InstallController {
    */
   async install(req: Request, res: Response) {
     try {
+      const body = req.body as {
+        shopifyShopId?: string;
+        name?: string;
+        domain: string;
+        accessToken: string;
+        scopes?: string;
+      };
+
       const {
         shopifyShopId,
         name,
         domain,
         accessToken,
         scopes,
-      } = req.body;
+      } = body;
 
       // Valida dados obrigatórios
       if (!domain || !accessToken) {
@@ -30,25 +38,32 @@ export class InstallController {
         });
       }
 
+      // Garante que são strings (não arrays)
+      const safeDomain = String(domain);
+      const safeAccessToken = String(accessToken);
+      const safeScopes = scopes ? String(scopes) : "";
+      const safeName = name ? String(name) : safeDomain;
+      const safeShopifyShopId = shopifyShopId ? String(shopifyShopId) : undefined;
+
       // Verifica se a loja já existe
-      const existingShop = await this.shopService.findByDomain(domain);
+      const existingShop = await this.shopService.findByDomain(safeDomain);
 
       let shop;
       if (!existingShop) {
         // Cria nova loja
         shop = await this.shopService.create({
-          shopifyShopId,
-          name: name || domain,
-          domain,
-          accessToken,
-          scopes: scopes || "",
+          shopifyShopId: safeShopifyShopId,
+          name: safeName,
+          domain: safeDomain,
+          accessToken: safeAccessToken,
+          scopes: safeScopes,
         });
       } else {
         // Atualiza token e scopes
         shop = await this.shopService.updateToken(
-          domain,
-          accessToken,
-          scopes || ""
+          safeDomain,
+          safeAccessToken,
+          safeScopes
         );
       }
 
@@ -77,7 +92,7 @@ export class InstallController {
    */
   async getByDomain(req: Request, res: Response) {
     try {
-      const { domain } = req.params;
+      const domain = String(req.params.domain);
       const shop = await this.shopService.findByDomain(domain);
 
       if (!shop) {
@@ -103,7 +118,7 @@ export class InstallController {
    */
   async test(req: Request, res: Response) {
     try {
-      const { domain } = req.params;
+      const domain = String(req.params.domain);
       const shop = await this.shopService.findByDomain(domain);
 
       if (!shop) {
