@@ -4,12 +4,12 @@ import routes from "./routes";
 
 const app = express();
 
-// ⚠️ IMPORTANTE: Stripe webhook precisa do body RAW
-// Isso é tratado na própria rota em webhooks.routes.ts
-
-// Resto da API usa JSON normal
-app.use(express.json());
-
+// ⚠️ ORDEM É CRÍTICA!
+// Primeiro monta as rotas (o webhook do Stripe usa raw() internamente)
 app.use("/", routes);
+
+// Depois aplica JSON para o resto da API
+// Isso NÃO afeta rotas que já foram definidas acima
+app.use(express.json());
 
 export default app;
