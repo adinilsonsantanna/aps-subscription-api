@@ -1,15 +1,14 @@
 // src/routes/index.ts
-// Rotas principais da API Central com middleware de autenticação
-
 import { Router } from "express";
 import installRoutes from "./install.routes";
 import subscriptionRoutes from "./subscriptions.routes";
 import webhookRoutes from "./webhooks.routes";
+import healthRoutes from "./health.routes";        // ← ADICIONAR
 import { apiAuth } from "../middlewares/apiAuth";
 
 const router = Router();
 
-// Rota pública (health check)
+// Rota pública (health check básico)
 router.get("/", (_, res) => {
     res.json({
         status: "OK",
@@ -17,12 +16,14 @@ router.get("/", (_, res) => {
     });
 });
 
-// 🔒 Rotas protegidas pelo middleware apiAuth
-// Apenas o App Shopify autorizado pode acessar
+// 🔍 Health check detalhado (público)          // ← ADICIONAR
+router.use("/health", healthRoutes);              // ← ADICIONAR
+
+// 🔒 Rotas protegidas
 router.use("/api/shop", apiAuth, installRoutes);
 router.use("/api/subscriptions", apiAuth, subscriptionRoutes);
 
-// Webhooks do Shopify e Mercado Pago têm autenticação própria
+// Webhooks
 router.use("/api/webhooks", webhookRoutes);
 
 export default router;
