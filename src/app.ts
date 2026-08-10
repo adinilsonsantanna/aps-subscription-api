@@ -4,12 +4,14 @@ import routes from "./routes";
 
 const app = express();
 
-// ⚠️ ORDEM É CRÍTICA!
-// Primeiro monta as rotas (o webhook do Stripe usa raw() internamente)
-app.use("/", routes);
+// Middleware condicional: aplica JSON em TODAS as rotas EXCETO webhook do Stripe
+app.use((req, res, next) => {
+    if (req.path === "/api/webhooks/stripe") {
+        return next(); // pula o JSON parser para webhook Stripe
+    }
+    express.json()(req, res, next);
+});
 
-// Depois aplica JSON para o resto da API
-// Isso NÃO afeta rotas que já foram definidas acima
-app.use(express.json());
+app.use("/", routes);
 
 export default app;
