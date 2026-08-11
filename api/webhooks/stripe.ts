@@ -38,10 +38,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     let event: Stripe.Event;
-    let signatureValid = false;
 
     try {
-        // Lê o body RAW antes de qualquer parse
         const payload = await getRawBody(req);
         console.log("[Stripe Webhook] Payload length:", payload.length);
 
@@ -50,11 +48,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             signature,
             process.env.STRIPE_WEBHOOK_SECRET || ""
         );
-        signatureValid = true;
         console.log("[Stripe Webhook] Assinatura valida!");
     } catch (err: any) {
         console.error("[Stripe Webhook] Assinatura invalida:", err.message);
-        // NAO processa eventos com assinatura invalida
         return res.status(400).json({
             error: "Assinatura invalida",
             message: err.message,
@@ -65,7 +61,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log("[Stripe Webhook] Evento ID:", event.id);
 
     try {
-        const shopDomain = event.data?.object?.metadata?.shopDomain as string | undefined;
+        // Cast para any porque event.data.object é um union type do Stripe
+        // e nem todos os tipos possuem metadata. Usamos any para acessar dinamicamente.
+        const stripeObject = event.data.object as any;
+        let shopDomain: string | undefined = stripeObject.metadata?.shopDomain;
+
+        // Se nao estiver no metadata direto, tenta buscar na subscription (para eventos de invoice)
+        if (!shopDomain && stripeObject.subscription) {
+            console.log("[Stripe Webhook] Buscando subscription:", stripeObject.subscription);
+            try {
+                const subscription = await stripe.subscriptions.retrieve(
+                    typeof stripeObject.subscription === "string"
+                        ? stripeObject.subscription
+                        : stripeObject.subscription.id
+                );
+                shopDomain = subscription.metadata?.shopDomain;
+                console.log("[Stripe Webhook] shopDomain da subscription:", shopDomain);
+            } catch (subErr: any) {
+                console.warn("[Stripe Webhook] Erro ao buscar subscription:", subErr.message);
+            }
+        }
+
         let shopId: string | null = null;
 
         if (shopDomain) {
@@ -77,22 +93,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 console.warn("[Stripe Webhook] Shop nao encontrado para domain:", shopDomain);
             }
         } else {
-            console.warn("[Stripe Webhook] shopDomain nao presente no metadata do evento");
+            console.warn("[Stripe Webhook] shopDomain nao presente no metadata");
         }
 
         await prisma.webhookEvent.create({
             data: {
-                shopId,          // pode ser null agora (schema alterado)
+                shopId,
                 source: "stripe",
                 eventId: event.id,
                 topic: event.type,
-                payload: event.data.object as any,
+                payload: stripeObject,
             },
         });
         console.log("[Stripe Webhook] Evento salvo no banco!");
     } catch (dbError: any) {
         console.error("[Stripe Webhook] ERRO AO SALVAR NO BANCO:", dbError.message);
-        // Retorna 500 para que a Stripe tente reenviar depois
         return res.status(500).json({
             error: "Erro ao salvar evento",
             message: dbError.message,
@@ -104,6 +119,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({
         received: true,
         eventType: event.type,
-        signatureValid,
     });
 }
