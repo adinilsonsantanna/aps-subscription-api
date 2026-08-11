@@ -8,11 +8,6 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "", {
 
 const prisma = new PrismaClient();
 
-/**
- * Lê o body raw (buffer) do request stream.
- * Necessário porque o Vercel parseia JSON automaticamente,
- * mas a Stripe exige o body exato (byte-a-byte) para validar a assinatura.
- */
 async function getRawBody(req: VercelRequest): Promise<string> {
     return new Promise((resolve, reject) => {
         const chunks: Buffer[] = [];
@@ -61,24 +56,50 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log("[Stripe Webhook] Evento ID:", event.id);
 
     try {
-        // Cast para any porque event.data.object é um union type do Stripe
-        // e nem todos os tipos possuem metadata. Usamos any para acessar dinamicamente.
         const stripeObject = event.data.object as any;
-        let shopDomain: string | undefined = stripeObject.metadata?.shopDomain;
 
-        // Se nao estiver no metadata direto, tenta buscar na subscription (para eventos de invoice)
+        // DEBUG: mostra todas as chaves do objeto
+        console.log("[Stripe Webhook] Objeto keys:", Object.keys(stripeObject));
+        console.log("[Stripe Webhook] metadata:", JSON.stringify(stripeObject.metadata));
+        console.log("[Stripe Webhook] subscription:", stripeObject.subscription);
+        console.log("[Stripe Webhook] customer:", stripeObject.customer);
+
+        let shopDomain: string | undefined = stripeObject.metadata?.shopDomain;
+        console.log("[Stripe Webhook] shopDomain do objeto:", shopDomain);
+
+        // Se nao estiver no metadata direto, tenta buscar na subscription
         if (!shopDomain && stripeObject.subscription) {
-            console.log("[Stripe Webhook] Buscando subscription:", stripeObject.subscription);
+            const subId = typeof stripeObject.subscription === "string"
+                ? stripeObject.subscription
+                : stripeObject.subscription.id;
+            console.log("[Stripe Webhook] Buscando subscription:", subId);
+
             try {
-                const subscription = await stripe.subscriptions.retrieve(
-                    typeof stripeObject.subscription === "string"
-                        ? stripeObject.subscription
-                        : stripeObject.subscription.id
-                );
+                const subscription = await stripe.subscriptions.retrieve(subId);
+                console.log("[Stripe Webhook] Subscription metadata:", JSON.stringify(subscription.metadata));
                 shopDomain = subscription.metadata?.shopDomain;
                 console.log("[Stripe Webhook] shopDomain da subscription:", shopDomain);
             } catch (subErr: any) {
                 console.warn("[Stripe Webhook] Erro ao buscar subscription:", subErr.message);
+            }
+        }
+
+        // Se ainda nao achou, tenta pelo customer
+        if (!shopDomain && stripeObject.customer) {
+            const custId = typeof stripeObject.customer === "string"
+                ? stripeObject.customer
+                : stripeObject.customer.id;
+            console.log("[Stripe Webhook] Buscando customer:", custId);
+
+            try {
+                const customer = await stripe.customers.retrieve(custId);
+                if (!customer.deleted) {
+                    console.log("[Stripe Webhook] Customer metadata:", JSON.stringify(customer.metadata));
+                    shopDomain = customer.metadata?.shopDomain;
+                    console.log("[Stripe Webhook] shopDomain do customer:", shopDomain);
+                }
+            } catch (custErr: any) {
+                console.warn("[Stripe Webhook] Erro ao buscar customer:", custErr.message);
             }
         }
 
@@ -93,11 +114,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 console.warn("[Stripe Webhook] Shop nao encontrado para domain:", shopDomain);
             }
         } else {
-            console.warn("[Stripe Webhook] shopDomain nao presente no metadata");
+            console.warn("[Stripe Webhook] shopDomain nao presente em nenhum lugar");
         }
 
-        await prisma.webhookEvent.create({
-            data: {
+        // Usa upsert para evitar erro de duplicado
+        await prisma.webhookEvent.upsert({
+            where: { eventId: event.id },
+            update: {
+                shopId,
+                topic: event.type,
+                payload: stripeObject,
+                processed: false,
+            },
+            create: {
                 shopId,
                 source: "stripe",
                 eventId: event.id,
@@ -105,7 +134,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 payload: stripeObject,
             },
         });
-        console.log("[Stripe Webhook] Evento salvo no banco!");
+        console.log("[Stripe Webhook] Evento salvo/atualizado no banco!");
     } catch (dbError: any) {
         console.error("[Stripe Webhook] ERRO AO SALVAR NO BANCO:", dbError.message);
         return res.status(500).json({
