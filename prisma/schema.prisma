@@ -48,10 +48,10 @@ model SubscriptionOrder {
   subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
   shopifyOrderId String?
   gatewayOrderId String?
-  amount           Decimal      @db.Decimal(10, 2)
-  status           String
-  processedAt      DateTime?
-  createdAt        DateTime     @default(now())
+  amount         Decimal      @db.Decimal(10, 2)
+  status         String
+  processedAt    DateTime?
+  createdAt      DateTime     @default(now())
 }
 
 model WebhookEvent {

@@ -1,12 +1,9 @@
-// api/webhooks/stripe.ts
-// Handler serverless para webhook do Stripe na Vercel
-
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import Stripe from "stripe";
 import { PrismaClient } from "@prisma/client";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "", {
-    apiVersion: "2025-07-30.basil",
+    apiVersion: "2025-02-24.acacia",
 });
 
 const prisma = new PrismaClient();
@@ -19,13 +16,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const signature = req.headers["stripe-signature"] as string;
 
     if (!signature) {
-        return res.status(400).json({ error: "Assinatura não encontrada" });
+        return res.status(400).json({ error: "Assinatura nao encontrada" });
     }
 
     let event: Stripe.Event;
     let signatureValid = false;
 
-    // Tenta reconstruir o payload como string
     let payload: string;
     if (Buffer.isBuffer(req.body)) {
         payload = req.body.toString("utf8");
@@ -36,26 +32,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     try {
-        // Tenta validar a assinatura
         event = stripe.webhooks.constructEvent(
             payload,
             signature,
             process.env.STRIPE_WEBHOOK_SECRET || ""
         );
         signatureValid = true;
-        console.log("[Stripe Webhook] ✅ Assinatura válida");
+        console.log("[Stripe Webhook] Assinatura valida");
     } catch (err: any) {
-        // ⚠️ Se a validação falhar (body foi alterado pelo parser da Vercel),
-        // reconstruímos o evento a partir do body parseado
-        console.warn("[Stripe Webhook] ⚠️ Assinatura inválida:", err.message);
-        console.warn("[Stripe Webhook] Processando em modo teste (sem validação)...");
+        console.warn("[Stripe Webhook] Assinatura invalida:", err.message);
+        console.warn("[Stripe Webhook] Processando em modo teste...");
 
         event = {
             id: (req.body as any)?.id || `evt_fallback_${Date.now()}`,
             type: (req.body as any)?.type || "unknown",
             data: (req.body as any)?.data || {},
             object: "event",
-            api_version: "2025-07-30.basil",
+            api_version: "2025-02-24.acacia",
             created: Math.floor(Date.now() / 1000),
             livemode: false,
             pending_webhooks: 0,
@@ -65,7 +58,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     console.log("[Stripe Webhook] Evento:", event.type, event.id);
 
-    // Salva o evento no banco
     const shopDomain = (event.data.object as any)?.metadata?.shopDomain;
     let shopId = "unknown";
 
@@ -84,7 +76,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         },
     });
 
-    // Processa o evento
     switch (event.type) {
         case "invoice.payment_succeeded": {
             const invoice = event.data.object as Stripe.Invoice;
@@ -162,13 +153,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
 
         default:
-            console.log(`[Stripe Webhook] Evento não processado: ${event.type}`);
+            console.log(`[Stripe Webhook] Evento nao processado: ${event.type}`);
     }
 
-    // Sempre retorna 200 para o Stripe não tentar reenviar
     return res.status(200).json({
         received: true,
         eventType: event.type,
-        signatureValid
+        signatureValid,
     });
 }

@@ -9,14 +9,15 @@ const shopifyAdminService = new ShopifyAdminService();
 export class SubscriptionController {
     async listByShop(req: Request, res: Response) {
         try {
-            const { domain } = req.params;
+            const domain = Array.isArray(req.params.domain) ? req.params.domain[0] : req.params.domain;
+
             const shop = await prisma.shop.findUnique({
                 where: { domain },
                 include: { subscriptions: true },
             });
 
             if (!shop) {
-                return res.status(404).json({ error: "Loja não encontrada" });
+                return res.status(404).json({ error: "Loja nao encontrada" });
             }
 
             return res.status(200).json(shop.subscriptions);
@@ -46,7 +47,7 @@ export class SubscriptionController {
             const shop = await prisma.shop.findUnique({ where: { domain } });
 
             if (!shop) {
-                return res.status(404).json({ error: "Loja não encontrada" });
+                return res.status(404).json({ error: "Loja nao encontrada" });
             }
 
             const selectedGateway = gateway || shop.gateway || "stripe";
@@ -140,14 +141,15 @@ export class SubscriptionController {
 
     async getById(req: Request, res: Response) {
         try {
-            const { id } = req.params;
+            const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+
             const subscription = await prisma.subscription.findUnique({
                 where: { id },
                 include: { shop: true, orders: true },
             });
 
             if (!subscription) {
-                return res.status(404).json({ error: "Assinatura não encontrada" });
+                return res.status(404).json({ error: "Assinatura nao encontrada" });
             }
 
             return res.status(200).json(subscription);
@@ -159,7 +161,7 @@ export class SubscriptionController {
 
     async updateStatus(req: Request, res: Response) {
         try {
-            const { id } = req.params;
+            const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
             const { status } = req.body;
             const subscription = await prisma.subscription.update({
                 where: { id },
@@ -174,14 +176,15 @@ export class SubscriptionController {
 
     async cancel(req: Request, res: Response) {
         try {
-            const { id } = req.params;
+            const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+
             const subscription = await prisma.subscription.findUnique({
                 where: { id },
                 include: { shop: true },
             });
 
             if (!subscription) {
-                return res.status(404).json({ error: "Assinatura não encontrada" });
+                return res.status(404).json({ error: "Assinatura nao encontrada" });
             }
 
             if (subscription.externalId && subscription.gateway === "stripe") {
