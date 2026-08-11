@@ -1,13 +1,16 @@
+// src/routes/webhooks.routes.ts
+// Rotas para receber webhooks do Shopify e Stripe
+
 import { Router } from "express";
 import { WebhookController } from "../controllers/WebhookController";
 
 const router = Router();
 const controller = new WebhookController();
 
-// Shopify: usa JSON normal
+// POST /api/webhooks/shopify - Webhooks do Shopify
 router.post("/shopify", controller.shopify.bind(controller));
 
-// Stripe: SEM body parser — o controller lê o body como Buffer/string
+// POST /api/webhooks/stripe - Webhooks do Stripe
 router.post("/stripe", controller.stripe.bind(controller));
 
 export default router;
