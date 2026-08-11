@@ -12,6 +12,14 @@
             "dest": "/api/webhooks/stripe.ts"
         },
         {
+            "src": "/api/checkout/setup",
+            "dest": "/api/checkout/setup.ts"
+        },
+        {
+            "src": "/checkout",
+            "dest": "/api/checkout.ts"
+        },
+        {
             "src": "/(.*)",
             "dest": "/api/index.ts"
         }
