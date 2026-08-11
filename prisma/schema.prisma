@@ -56,8 +56,8 @@ model SubscriptionOrder {
 
 model WebhookEvent {
   id        String   @id @default(cuid())
-  shopId    String
-  shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shopId    String?  // <-- ALTERADO: tornou-se opcional
+  shop      Shop?    @relation(fields: [shopId], references: [id], onDelete: Cascade)
   source    String
   eventId   String   @unique
   topic     String
