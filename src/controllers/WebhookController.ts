@@ -1,3 +1,6 @@
+// src/controllers/WebhookController.ts
+// Controller para processar webhooks do Shopify e Stripe
+
 import { Request, Response } from "express";
 import crypto from "crypto";
 import { PrismaClient } from "@prisma/client";
@@ -7,6 +10,9 @@ const prisma = new PrismaClient();
 const stripeWebhookService = new StripeWebhookService();
 
 export class WebhookController {
+  /**
+   * Processa webhooks do Shopify
+   */
   async shopify(req: Request, res: Response) {
     try {
       const topic = req.headers["x-shopify-topic"] as string;
@@ -59,6 +65,10 @@ export class WebhookController {
     }
   }
 
+  /**
+   * Processa webhooks do Stripe
+   * Importante: esta rota NÃO deve usar express.json() para preservar o body raw
+   */
   async stripe(req: Request, res: Response) {
     try {
       const signature = req.headers["stripe-signature"] as string;
@@ -67,9 +77,22 @@ export class WebhookController {
         return res.status(400).json({ error: "Assinatura não encontrada" });
       }
 
-      const event = stripeWebhookService.constructEvent(req.body, signature);
+      // Na Vercel, req.body pode vir como Buffer, string ou objeto JSON já parseado
+      let payload: string;
 
-      const shopDomain = event.data.object.metadata?.shopDomain;
+      if (Buffer.isBuffer(req.body)) {
+        payload = req.body.toString("utf8");
+      } else if (typeof req.body === "string") {
+        payload = req.body;
+      } else if (req.body && typeof req.body === "object") {
+        payload = JSON.stringify(req.body);
+      } else {
+        return res.status(400).json({ error: "Body inválido" });
+      }
+
+      const event = stripeWebhookService.constructEvent(payload, signature);
+
+      const shopDomain = event.data.object?.metadata?.shopDomain;
       let shopId = "unknown";
 
       if (shopDomain) {
