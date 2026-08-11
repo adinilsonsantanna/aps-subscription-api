@@ -218,12 +218,12 @@
         <p class="subtitle">Preencha os dados para criar uma assinatura de teste</p>
 
         <div class="info-box">
-            <strong>Cartão de teste Stripe:</strong> <code>4242 4242 4242 4242</code><br>
+            <strong>Cartao de teste Stripe:</strong> <code>4242 4242 4242 4242</code><br>
             Validade futura qualquer | CVC: 123 | CEP: 12345
         </div>
 
         <form id="checkout-form">
-            <div class="section-title">Autenticação</div>
+            <div class="section-title">Autenticacao</div>
             <div class="field-group api-key-field">
                 <label for="apiKey">X-API-Key (modo teste)</label>
                 <input type="password" id="apiKey" placeholder="Sua API Key" required>
@@ -239,7 +239,7 @@
             <div class="row">
                 <div class="field-group">
                     <label for="customerName">Nome</label>
-                    <input type="text" id="customerName" placeholder="João Silva" required>
+                    <input type="text" id="customerName" placeholder="Joao Silva" required>
                 </div>
                 <div class="field-group">
                     <label for="customerEmail">E-mail</label>
@@ -288,7 +288,7 @@
 
             <div class="section-title">Pagamento</div>
             <div class="field-group">
-                <label>Dados do Cartão</label>
+                <label>Dados do Cartao</label>
                 <div id="card-element"></div>
                 <div id="card-errors"></div>
             </div>
@@ -302,20 +302,20 @@
     </div>
 
     <script>
-        const API_BASE = window.location.origin;
-        let stripe, cardElement;
+        var API_BASE = window.location.origin;
+        var stripe, cardElement;
 
         async function initStripe() {
             try {
-                const res = await fetch(`${API_BASE}/api/checkout/setup`);
-                const data = await res.json();
+                var res = await fetch(API_BASE + "/api/checkout/setup");
+                var data = await res.json();
 
                 if (!data.publishableKey) {
                     throw new Error("Publishable key nao retornada");
                 }
 
                 stripe = Stripe(data.publishableKey);
-                const elements = stripe.elements({
+                var elements = stripe.elements({
                     appearance: { theme: 'stripe' }
                 });
 
@@ -332,8 +332,8 @@
 
                 cardElement.mount('#card-element');
 
-                cardElement.on('change', (event) => {
-                    const errorDiv = document.getElementById('card-errors');
+                cardElement.on('change', function (event) {
+                    var errorDiv = document.getElementById('card-errors');
                     errorDiv.textContent = event.error ? event.error.message : '';
                 });
 
@@ -343,35 +343,35 @@
         }
 
         function showResult(type, message) {
-            const resultDiv = document.getElementById('result');
+            var resultDiv = document.getElementById('result');
             resultDiv.className = 'result ' + type;
             resultDiv.innerHTML = message;
             resultDiv.style.display = 'block';
         }
 
         function setLoading(loading) {
-            const btn = document.getElementById('submit-btn');
+            var btn = document.getElementById('submit-btn');
             btn.disabled = loading;
             btn.innerHTML = loading
                 ? '<span class="spinner"></span>Processando...'
                 : 'Criar Assinatura';
         }
 
-        document.getElementById('checkout-form').addEventListener('submit', async (e) => {
+        document.getElementById('checkout-form').addEventListener('submit', async function (e) {
             e.preventDefault();
             setLoading(true);
             document.getElementById('result').style.display = 'none';
 
-            const apiKey = document.getElementById('apiKey').value;
+            var apiKey = document.getElementById('apiKey').value;
             if (!apiKey) {
-                showResult('error', 'API Key é obrigatória');
+                showResult('error', 'API Key e obrigatoria');
                 setLoading(false);
                 return;
             }
 
             try {
                 // 1. Criar PaymentMethod no Stripe
-                const { paymentMethod, error } = await stripe.createPaymentMethod({
+                var result = await stripe.createPaymentMethod({
                     type: 'card',
                     card: cardElement,
                     billing_details: {
@@ -380,14 +380,15 @@
                     }
                 });
 
-                if (error) {
-                    throw new Error(error.message);
+                if (result.error) {
+                    throw new Error(result.error.message);
                 }
 
+                var paymentMethod = result.paymentMethod;
                 console.log("[Checkout] PaymentMethod criado:", paymentMethod.id);
 
                 // 2. Criar assinatura na API
-                const payload = {
+                var payload = {
                     domain: document.getElementById('domain').value,
                     shopifyCustomerId: document.getElementById('shopifyCustomerId').value,
                     shopifyProductId: document.getElementById('shopifyProductId').value,
@@ -402,7 +403,7 @@
                     gateway: "stripe"
                 };
 
-                const res = await fetch(`${API_BASE}/api/subscriptions`, {
+                var res = await fetch(API_BASE + "/api/subscriptions", {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -411,19 +412,19 @@
                     body: JSON.stringify(payload)
                 });
 
-                const data = await res.json();
+                var data = await res.json();
 
                 if (!res.ok) {
-                    throw new Error(data.message || data.error || `HTTP ${res.status}`);
+                    throw new Error(data.message || data.error || ("HTTP " + res.status));
                 }
 
-                showResult('success', `
-                    <strong>Assinatura criada com sucesso!</strong><br><br>
-                    <b>ID:</b> ${data.subscription.id}<br>
-                    <b>Stripe Subscription:</b> ${data.gatewaySubscriptionId}<br>
-                    <b>Status:</b> ${data.subscription.status}<br>
-                    <b>Próxima cobrança:</b> ${new Date(data.subscription.nextBillingAt).toLocaleDateString('pt-BR')}
-                `);
+                showResult('success',
+                    '<strong>Assinatura criada com sucesso!</strong><br><br>' +
+                    '<b>ID:</b> ' + data.subscription.id + '<br>' +
+                    '<b>Stripe Subscription:</b> ' + data.gatewaySubscriptionId + '<br>' +
+                    '<b>Status:</b> ' + data.subscription.status + '<br>' +
+                    '<b>Proxima cobranca:</b> ' + new Date(data.subscription.nextBillingAt).toLocaleDateString('pt-BR')
+                );
 
             } catch (err) {
                 console.error("[Checkout] Erro:", err);
