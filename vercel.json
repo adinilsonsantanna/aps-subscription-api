@@ -8,6 +8,10 @@
     ],
     "routes": [
         {
+            "src": "/api/webhooks/stripe",
+            "dest": "/api/webhooks/stripe.ts"
+        },
+        {
             "src": "/(.*)",
             "dest": "/api/index.ts"
         }
