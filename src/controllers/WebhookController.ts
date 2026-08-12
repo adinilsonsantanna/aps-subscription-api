@@ -1243,29 +1243,57 @@ export class WebhookController {
     });
 
     // ============================================================
-    // SHOPIFY API
+    // SHOPIFY APP API
     // ============================================================
+    //
+    // IMPORTANTE:
+    // A API Central não acessa mais a Shopify diretamente.
+    //
+    // O App Shopify é responsável pela sessão offline,
+    // incluindo a renovação dos expiring offline access tokens.
+    //
+    // ============================================================
+
+    const shopifyAppUrl =
+      process.env.SHOPIFY_APP_URL;
+
+    const internalApiKey =
+      process.env.API_KEY;
+
+    if (!shopifyAppUrl) {
+      throw new Error(
+        "SHOPIFY_APP_URL não configurado na API Central"
+      );
+    }
+
+    if (!internalApiKey) {
+      throw new Error(
+        "API_KEY não configurada na API Central"
+      );
+    }
+
+    console.log(
+      "[Shopify] Solicitando criação do pedido ao App Shopify..."
+    );
 
     const response =
       await fetch(
-        `https://${shop.domain}/admin/api/2026-07/graphql.json`,
+        `${shopifyAppUrl}/api/shopify/create-recurring-order`,
         {
           method: "POST",
 
           headers: {
-            "X-Shopify-Access-Token":
-              shop.accessToken,
-
             "Content-Type":
               "application/json",
+
+            "X-API-Key":
+              internalApiKey,
           },
 
           body: JSON.stringify({
-            query: mutation,
+            shop: shop.domain,
 
-            variables: {
-              order: orderInput,
-            },
+            order: orderInput,
           }),
         }
       );
@@ -1279,13 +1307,13 @@ export class WebhookController {
         await response.text();
 
       console.error(
-        "[Shopify] GraphQL HTTP error:",
+        "[Shopify] App Shopify retornou erro:",
         response.status,
         errorText
       );
 
       throw new Error(
-        `Shopify GraphQL error: ${response.status}`
+        `Shopify App API error: ${response.status} - ${errorText}`
       );
     }
 
@@ -1297,7 +1325,7 @@ export class WebhookController {
       await response.json();
 
     console.log(
-      "[Shopify] GraphQL response:",
+      "[Shopify] Resposta do App Shopify:",
       JSON.stringify(
         result,
         null,
@@ -1306,51 +1334,17 @@ export class WebhookController {
     );
 
     // ============================================================
-    // GRAPHQL ERRORS
+    // VALIDAR PEDIDO
     // ============================================================
 
-    if (
-      result.errors &&
-      result.errors.length > 0
-    ) {
+    if (!result?.order?.id) {
       throw new Error(
-        `Shopify GraphQL errors: ${JSON.stringify(
-          result.errors
-        )}`
+        "Shopify App não retornou o ID do pedido"
       );
     }
-
-    // ============================================================
-    // USER ERRORS
-    // ============================================================
-
-    const userErrors =
-      result.data
-        ?.orderCreate
-        ?.userErrors || [];
-
-    if (userErrors.length > 0) {
-      throw new Error(
-        `Shopify orderCreate: ${JSON.stringify(
-          userErrors
-        )}`
-      );
-    }
-
-    // ============================================================
-    // PEDIDO
-    // ============================================================
 
     const order =
-      result.data
-        ?.orderCreate
-        ?.order;
-
-    if (!order?.id) {
-      throw new Error(
-        "Shopify não retornou o ID do pedido"
-      );
-    }
+      result.order;
 
     console.log(
       "[Shopify] ✅ Pedido recorrente criado:",
@@ -1372,6 +1366,7 @@ export class WebhookController {
       order.totalPriceSet
     );
 
+   
     return order.id;
   }
 
