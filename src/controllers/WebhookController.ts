@@ -222,17 +222,95 @@ export class WebhookController {
 
       switch (event.type) {
         case "invoice.payment_succeeded": {
-          const invoice =
-            event.data.object;
+          console.log("==================================================");
+          console.log("[Stripe Webhook] 🚀 INÍCIO invoice.payment_succeeded");
+          console.log("[Stripe Webhook] Event ID:", event.id);
+
+          const invoice = event.data.object;
+
+          console.log("[Stripe Webhook] Invoice ID:", invoice.id);
+          console.log("[Stripe Webhook] Billing reason:", invoice.billing_reason);
+          console.log("[Stripe Webhook] Amount paid:", invoice.amount_paid);
+          console.log("[Stripe Webhook] Customer:", invoice.customer);
+          console.log("[Stripe Webhook] Subscription:", invoice.subscription);
+
+          // ----------------------------------------------------------
+          // METADATA
+          // ----------------------------------------------------------
+
+          const invoiceMetadata =
+            invoice.metadata || {};
+
+          const lineMetadata =
+            invoice.lines?.data?.[0]?.metadata || {};
+
+          const subscriptionMetadata =
+            invoice.parent?.subscription_details?.metadata || {};
+
+          console.log(
+            "[Stripe Webhook] Invoice metadata:",
+            invoiceMetadata
+          );
+
+          console.log(
+            "[Stripe Webhook] Line metadata:",
+            lineMetadata
+          );
+
+          console.log(
+            "[Stripe Webhook] Subscription metadata:",
+            subscriptionMetadata
+          );
+
+          const metadata = {
+            ...subscriptionMetadata,
+            ...lineMetadata,
+            ...invoiceMetadata,
+          };
+
+          console.log(
+            "[Stripe Webhook] Metadata final:",
+            metadata
+          );
+
+          // ----------------------------------------------------------
+          // STRIPE SERVICE
+          // ----------------------------------------------------------
+
+          console.log(
+            "[Stripe Webhook] 🔎 Executando handleInvoicePaymentSucceeded..."
+          );
 
           const result =
             await stripeWebhookService.handleInvoicePaymentSucceeded(
               invoice
             );
 
+          console.log(
+            "[Stripe Webhook] Resultado do Stripe Service:",
+            result
+          );
+
           if (!result.subscriptionId) {
+            console.error(
+              "[Stripe Webhook] ❌ subscriptionId não encontrado na invoice"
+            );
+
             break;
           }
+
+          console.log(
+            "[Stripe Webhook] ✅ Subscription ID:",
+            result.subscriptionId
+          );
+
+          // ----------------------------------------------------------
+          // BUSCAR ASSINATURA APS
+          // ----------------------------------------------------------
+
+          console.log(
+            "[Stripe Webhook] 🔎 Buscando assinatura APS no banco..."
+          );
 
           const subscription =
             await prisma.subscription.findFirst({
@@ -246,17 +324,37 @@ export class WebhookController {
             });
 
           if (!subscription) {
-            console.warn(
-              "[Stripe Webhook] Assinatura APS não encontrada:",
+            console.error(
+              "[Stripe Webhook] ❌ ASSINATURA APS NÃO ENCONTRADA"
+            );
+
+            console.error(
+              "[Stripe Webhook] externalId procurado:",
               result.subscriptionId
             );
 
             break;
           }
 
-          /*
-           * Evita registrar a mesma invoice duas vezes.
-           */
+          console.log(
+            "[Stripe Webhook] ✅ Assinatura APS encontrada:",
+            subscription.id
+          );
+
+          console.log(
+            "[Stripe Webhook] Shopify:",
+            {
+              domain: subscription.shop?.domain,
+              customerId: subscription.shopifyCustomerId,
+              productId: subscription.shopifyProductId,
+              variantId: subscription.shopifyVariantId,
+            }
+          );
+
+          // ----------------------------------------------------------
+          // DUPLICIDADE
+          // ----------------------------------------------------------
+
           const existingOrder =
             await prisma.subscriptionOrder.findFirst({
               where: {
@@ -267,23 +365,26 @@ export class WebhookController {
 
           if (existingOrder) {
             console.log(
-              "[Stripe Webhook] Invoice já processada:",
+              "[Stripe Webhook] ⚠️ Invoice já processada:",
               result.invoiceId
+            );
+
+            console.log(
+              "[Stripe Webhook] Shopify Order ID existente:",
+              existingOrder.shopifyOrderId
             );
 
             break;
           }
 
-          /*
-           * Determina se esta é a primeira cobrança
-           * ou uma recorrência.
-           *
-           * O primeiro pagamento da assinatura acontece
-           * no Shopify Checkout.
-           *
-           * Portanto, somente ciclos posteriores devem
-           * gerar um novo pedido Shopify.
-           */
+          console.log(
+            "[Stripe Webhook] ✅ Invoice ainda não processada"
+          );
+
+          // ----------------------------------------------------------
+          // VERIFICAR RECORRÊNCIA
+          // ----------------------------------------------------------
+
           const billingReason =
             invoice.billing_reason;
 
@@ -293,27 +394,64 @@ export class WebhookController {
             billingReason ===
             "subscription_threshold";
 
+          console.log(
+            "[Stripe Webhook] Billing reason:",
+            billingReason
+          );
+
+          console.log(
+            "[Stripe Webhook] É recorrência?:",
+            isRecurring
+          );
+
           let shopifyOrderId:
             | string
             | undefined;
 
-          /*
-           * RECORRÊNCIA:
-           *
-           * Stripe
-           *   ↓
-           * invoice.payment_succeeded
-           *   ↓
-           * APS API
-           *   ↓
-           * Shopify orderCreate
-           */
+          // ----------------------------------------------------------
+          // CRIAR PEDIDO SHOPIFY
+          // ----------------------------------------------------------
+
           if (isRecurring) {
-            shopifyOrderId =
-              await this.createRecurringShopifyOrder(
-                subscription
+            console.log(
+              "[Stripe Webhook] 🛒 INICIANDO CRIAÇÃO DO PEDIDO RECORRENTE SHOPIFY"
+            );
+
+            try {
+              shopifyOrderId =
+                await this.createRecurringShopifyOrder(
+                  subscription
+                );
+
+              console.log(
+                "[Stripe Webhook] ✅ PEDIDO SHOPIFY CRIADO:",
+                shopifyOrderId
               );
+            } catch (shopifyError) {
+              console.error(
+                "[Stripe Webhook] ❌ ERRO AO CRIAR PEDIDO SHOPIFY"
+              );
+
+              console.error(
+                "[Stripe Webhook] Erro completo:",
+                shopifyError
+              );
+
+              throw shopifyError;
+            }
+          } else {
+            console.log(
+              "[Stripe Webhook] ℹ️ Não é recorrência. Nenhum pedido Shopify será criado."
+            );
           }
+
+          // ----------------------------------------------------------
+          // REGISTRAR SUBSCRIPTION ORDER
+          // ----------------------------------------------------------
+
+          console.log(
+            "[Stripe Webhook] 💾 Registrando SubscriptionOrder..."
+          );
 
           await prisma.subscriptionOrder.create({
             data: {
@@ -336,12 +474,14 @@ export class WebhookController {
             },
           });
 
-          /*
-           * Atualiza a próxima cobrança.
-           *
-           * Por enquanto utilizamos o intervalo configurado
-           * na assinatura.
-           */
+          console.log(
+            "[Stripe Webhook] ✅ SubscriptionOrder registrado"
+          );
+
+          // ----------------------------------------------------------
+          // PRÓXIMA COBRANÇA
+          // ----------------------------------------------------------
+
           const nextBillingDate =
             this.calculateNextBillingDate(
               new Date(),
@@ -359,9 +499,20 @@ export class WebhookController {
             },
           });
 
+          console.log(
+            "[Stripe Webhook] ✅ Próxima cobrança atualizada:",
+            nextBillingDate
+          );
+
+          console.log(
+            "[Stripe Webhook] 🏁 FIM invoice.payment_succeeded"
+          );
+
+          console.log("==================================================");
+
           break;
         }
-
+        
         // ======================================================
         // INVOICE PAYMENT FAILED
         // ======================================================
