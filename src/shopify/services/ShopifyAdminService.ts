@@ -7,7 +7,7 @@ export class ShopifyAdminService {
    */
   async getShopInfo(domain: string, accessToken: string) {
     const response = await fetch(
-      `https://${domain}/admin/api/2024-07/shop.json`,
+      `https://${domain}/admin/api/2026-07/shop.json`,
       {
         headers: {
           "X-Shopify-Access-Token": accessToken,
@@ -69,7 +69,7 @@ export class ShopifyAdminService {
     `;
 
     const response = await fetch(
-      `https://${domain}/admin/api/2024-07/graphql.json`,
+      `https://${domain}/admin/api/2026-07/graphql.json`,
       {
         method: "POST",
         headers: {
@@ -118,7 +118,7 @@ export class ShopifyAdminService {
     `;
 
     const response = await fetch(
-      `https://${domain}/admin/api/2024-07/graphql.json`,
+      `https://${domain}/admin/api/2026-07/graphql.json`,
       {
         method: "POST",
         headers: {
