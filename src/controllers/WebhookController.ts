@@ -14,7 +14,11 @@ export class WebhookController {
       const hmac = req.headers["x-shopify-hmac-sha256"] as string;
       const shop = req.headers["x-shopify-shop-domain"] as string;
 
-      const body = JSON.stringify(req.body);
+      const rawBody = Buffer.isBuffer(req.body)
+        ? req.body
+        : Buffer.from(req.body);
+
+      const body = rawBody.toString("utf8");
       const hash = crypto
         .createHmac("sha256", process.env.SHOPIFY_WEBHOOK_SECRET || "")
         .update(body, "utf8")
@@ -23,6 +27,8 @@ export class WebhookController {
       if (hash !== hmac) {
         return res.status(401).json({ error: "Assinatura inválida" });
       }
+
+      const payload = JSON.parse(body);
 
       const shopRecord = await prisma.shop.findUnique({ where: { domain: shop } });
       if (!shopRecord) {
@@ -35,19 +41,19 @@ export class WebhookController {
           source: "shopify",
           eventId: req.headers["x-shopify-webhook-id"] as string,
           topic,
-          payload: req.body,
+          payload,
         },
       });
 
       switch (topic) {
         case "subscription_contracts/create":
-          await this.handleSubscriptionContractCreate(req.body);
+          await this.handleSubscriptionContractCreate(payload);
           break;
         case "subscription_contracts/update":
-          await this.handleSubscriptionContractUpdate(req.body);
+          await this.handleSubscriptionContractUpdate(payload);
           break;
         case "orders/create":
-          await this.handleOrderCreate(req.body, shopRecord.id);
+          await this.handleOrderCreate(payload, shopRecord.id);
           break;
         default:
           console.log(`[Webhook] Tópico não processado: ${topic}`);

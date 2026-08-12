@@ -1,15 +1,15 @@
-// src/routes/webhooks.routes.ts
-import { Router } from "express";
+import { Router, raw } from "express";
 import { WebhookController } from "../controllers/WebhookController";
 
 const router = Router();
 const controller = new WebhookController();
 
-// Shopify webhook (continua pelo Express)
-router.post("/shopify", controller.shopify.bind(controller));
+// Shopify webhook precisa do body RAW para validar HMAC.
+router.post(
+    "/shopify",
+    raw({ type: "application/json" }),
+    controller.shopify.bind(controller)
+);
 
-// ⚠️ Stripe webhook AGORA É UM ENDPOINT SERVERLESS SEPARADO
-// em api/webhooks/stripe.ts — NÃO passe pelo Express!
-// router.post("/stripe", ...);  ← REMOVIDO
-
+// Stripe webhook é tratado separadamente em api/webhooks/stripe.ts.
 export default router;
