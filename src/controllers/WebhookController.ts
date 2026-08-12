@@ -187,34 +187,85 @@ export class WebhookController {
         };
       }
 
-      const shopDomain =
-        event.data?.object?.metadata?.shopDomain;
+      // ============================================================
+      // CONTROLE DE DUPLICIDADE DO WEBHOOK STRIPE
+      // ============================================================
 
-      let shopId = "unknown";
+      const eventId = event.id;
 
-      if (shopDomain) {
-        const shop = await prisma.shop.findUnique({
+      let existingWebhookEvent =
+        await prisma.webhookEvent.findFirst({
           where: {
-            domain: shopDomain,
+            eventId,
           },
         });
 
-        if (shop) {
-          shopId = shop.id;
-        }
-      }
+      if (existingWebhookEvent) {
+        console.log(
+          `[Stripe Webhook] Evento ${eventId} já existe.`
+        );
 
-      await prisma.webhookEvent.create({
-        data: {
-          shopId,
-          source: "stripe",
-          eventId: event.id,
-          topic: event.type,
-          payload:
-            event.data?.object ||
-            req.body,
-        },
-      });
+        console.log(
+          "[Stripe Webhook] Processado:",
+          existingWebhookEvent.processed
+        );
+
+        if (existingWebhookEvent.processed) {
+          console.log(
+            "[Stripe Webhook] ✅ Evento já processado. Ignorando."
+          );
+
+          return res.status(200).json({
+            received: true,
+            alreadyProcessed: true,
+            eventType: event.type,
+          });
+        }
+
+        console.log(
+          "[Stripe Webhook] ⚠️ Evento existe mas NÃO foi processado."
+        );
+
+        console.log(
+          "[Stripe Webhook] 🔄 Continuando processamento..."
+        );
+      } else {
+        let shopId = "unknown";
+
+        const shopDomain =
+          event.data?.object?.metadata?.shopDomain;
+
+        if (shopDomain) {
+          const shop =
+            await prisma.shop.findUnique({
+              where: {
+                domain: shopDomain,
+              },
+            });
+
+          if (shop) {
+            shopId = shop.id;
+          }
+        }
+
+        existingWebhookEvent =
+          await prisma.webhookEvent.create({
+            data: {
+              shopId,
+              source: "stripe",
+              eventId,
+              topic: event.type,
+              payload:
+                event.data?.object ||
+                req.body,
+              processed: false,
+            },
+          });
+
+        console.log(
+          `[Stripe Webhook] ✅ Evento ${eventId} registrado como não processado.`
+        );
+      }
 
       // ========================================================
       // INVOICE PAYMENT SUCCEEDED
@@ -512,7 +563,7 @@ export class WebhookController {
 
           break;
         }
-        
+
         // ======================================================
         // INVOICE PAYMENT FAILED
         // ======================================================
@@ -614,6 +665,25 @@ export class WebhookController {
           console.log(
             `[Stripe Webhook] Evento não processado: ${event.type}`
           );
+      }
+
+      // ============================================================
+      // MARCAR WEBHOOK COMO PROCESSADO
+      // ============================================================
+
+      if (event.id) {
+        await prisma.webhookEvent.updateMany({
+          where: {
+            eventId: event.id,
+          },
+          data: {
+            processed: true,
+          },
+        });
+
+        console.log(
+          `[Stripe Webhook] ✅ Evento ${event.id} marcado como processado.`
+        );
       }
 
       return res.status(200).json({
