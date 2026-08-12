@@ -742,7 +742,9 @@ export class WebhookController {
      */
     if (customerId) {
       orderInput.customer = {
-        id: customerId,
+        toAssociate: {
+          id: customerId,
+        },
       };
     }
 
