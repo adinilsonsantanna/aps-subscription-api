@@ -471,7 +471,8 @@ export class WebhookController {
             try {
               shopifyOrderId =
                 await this.createRecurringShopifyOrder(
-                  subscription
+                  subscription,
+                  invoice
                 );
 
               console.log(
@@ -891,145 +892,447 @@ export class WebhookController {
   // ============================================================
 
   private async createRecurringShopifyOrder(
-    subscription: any
-  ): Promise<string> {
-    const shop =
-      subscription.shop;
+  subscription: any,
+  invoice: any
+): Promise<string> {
+  const shop = subscription.shop;
 
-    if (!shop) {
-      throw new Error(
-        "Loja não encontrada na assinatura"
-      );
-    }
+  if (!shop) {
+    throw new Error(
+      "Loja não encontrada na assinatura"
+    );
+  }
 
-    if (!subscription.shopifyVariantId) {
-      throw new Error(
-        "Variant ID não encontrado na assinatura"
-      );
-    }
+  if (!subscription.shopifyVariantId) {
+    throw new Error(
+      "Variant ID não encontrado na assinatura"
+    );
+  }
 
-    const variantId =
-      this.toShopifyVariantGid(
-        subscription.shopifyVariantId
-      );
+  const variantId =
+    this.toShopifyVariantGid(
+      subscription.shopifyVariantId
+    );
 
-    const customerId =
-      subscription.shopifyCustomerId
-        ? this.toShopifyCustomerGid(
+  const customerId =
+    subscription.shopifyCustomerId
+      ? this.toShopifyCustomerGid(
           subscription.shopifyCustomerId
         )
-        : undefined;
+      : undefined;
 
-    const mutation = `
-      mutation orderCreate(
-        $order: OrderCreateOrderInput!
-      ) {
-        orderCreate(order: $order) {
-          userErrors {
-            field
-            message
+  // ============================================================
+  // DADOS DA INVOICE STRIPE
+  // ============================================================
+
+  const amountPaid =
+    Number(invoice.amount_paid || 0) / 100;
+
+  const currency =
+    String(
+      invoice.currency || "brl"
+    ).toUpperCase();
+
+  const customerEmail =
+    invoice.customer_email ||
+    invoice.customer_details?.email ||
+    undefined;
+
+  const customerName =
+    invoice.customer_name ||
+    invoice.customer_details?.name ||
+    undefined;
+
+  const customerPhone =
+    invoice.customer_phone ||
+    invoice.customer_details?.phone ||
+    undefined;
+
+  // ============================================================
+  // SEPARAR NOME
+  // ============================================================
+
+  let firstName: string | undefined;
+  let lastName: string | undefined;
+
+  if (customerName) {
+    const parts =
+      String(customerName)
+        .trim()
+        .split(/\s+/);
+
+    firstName = parts.shift();
+
+    if (parts.length > 0) {
+      lastName = parts.join(" ");
+    }
+  }
+
+  // ============================================================
+  // ENDEREÇO STRIPE
+  // ============================================================
+
+  const stripeAddress =
+    invoice.customer_shipping?.address ||
+    invoice.customer_details?.address ||
+    undefined;
+
+  const shippingAddress =
+    stripeAddress
+      ? {
+          firstName,
+          lastName,
+          address1:
+            stripeAddress.line1 || undefined,
+          address2:
+            stripeAddress.line2 || undefined,
+          city:
+            stripeAddress.city || undefined,
+          province:
+            stripeAddress.state || undefined,
+          countryCode:
+            stripeAddress.country || undefined,
+          zip:
+            stripeAddress.postal_code || undefined,
+        }
+      : undefined;
+
+  // ============================================================
+  // METADADOS
+  // ============================================================
+
+  const customAttributes = [
+    {
+      key: "APS Subscription ID",
+      value: String(subscription.id),
+    },
+    {
+      key: "Stripe Invoice ID",
+      value: String(invoice.id),
+    },
+    {
+      key: "Stripe Subscription ID",
+      value: String(
+        invoice.subscription || ""
+      ),
+    },
+  ];
+
+  // ============================================================
+  // MUTATION SHOPIFY
+  // ============================================================
+
+  const mutation = `
+    mutation orderCreate(
+      $order: OrderCreateOrderInput!
+    ) {
+      orderCreate(order: $order) {
+        userErrors {
+          field
+          message
+        }
+
+        order {
+          id
+          name
+          displayFinancialStatus
+          totalPriceSet {
+            shopMoney {
+              amount
+              currencyCode
+            }
           }
-          order {
+
+          customer {
             id
-            name
-            displayFinancialStatus
+            email
+            firstName
+            lastName
           }
         }
       }
-    `;
+    }
+  `;
 
-    const lineItem = {
-      variantId,
-      quantity: 1,
-    };
+  // ============================================================
+  // LINE ITEM
+  // ============================================================
 
-    const orderInput: any = {
-      lineItems: [
-        lineItem,
-      ],
-
-      financialStatus: "PAID",
-
-      currency:
-        "BRL",
-
-      note:
-        `APS Subscription ${subscription.id} - Recorrência Stripe`,
-    };
+  const lineItem: any = {
+    variantId,
+    quantity: 1,
 
     /*
-     * Se tivermos o cliente Shopify, associamos o pedido
-     * ao cliente existente.
+     * IMPORTANTE:
+     * Usa o valor efetivamente pago na Stripe.
+     *
+     * Isso evita que o Shopify utilize o preço atual
+     * da variante.
      */
-    if (customerId) {
-      orderInput.customer = {
-        toAssociate: {
-          id: customerId,
-        },
-      };
-    }
+    priceSet: {
+      shopMoney: {
+        amount: amountPaid.toFixed(2),
+        currencyCode: currency,
+      },
+    },
 
-    const response =
-      await fetch(
-        `https://${shop.domain}/admin/api/2026-07/graphql.json`,
-        {
-          method: "POST",
+    properties: [
+      {
+        name: "_aps_subscription",
+        value: "true",
+      },
+      {
+        name: "_aps_subscription_id",
+        value: String(subscription.id),
+      },
+      {
+        name: "_stripe_invoice_id",
+        value: String(invoice.id),
+      },
+    ],
+  };
 
-          headers: {
-            "X-Shopify-Access-Token":
-              shop.accessToken,
+  // ============================================================
+  // ORDER INPUT
+  // ============================================================
 
-            "Content-Type":
-              "application/json",
+  const orderInput: any = {
+    lineItems: [
+      lineItem,
+    ],
+
+    financialStatus: "PAID",
+
+    currency,
+
+    presentmentCurrency: currency,
+
+    email: customerEmail,
+
+    phone: customerPhone,
+
+    note:
+      `APS Subscription ${subscription.id} - ` +
+      `Recorrência Stripe - Invoice ${invoice.id}`,
+
+    customAttributes,
+
+    /*
+     * Mantém a data real da cobrança Stripe.
+     */
+    processedAt:
+      invoice.status_transitions?.paid_at
+        ? new Date(
+            Number(
+              invoice.status_transitions.paid_at
+            ) * 1000
+          ).toISOString()
+        : new Date().toISOString(),
+
+    /*
+     * Registra a transação como paga.
+     */
+    transactions: [
+      {
+        kind: "SALE",
+
+        status: "SUCCESS",
+
+        amountSet: {
+          shopMoney: {
+            amount: amountPaid.toFixed(2),
+            currencyCode: currency,
           },
+        },
+      },
+    ],
+  };
 
-          body: JSON.stringify({
-            query: mutation,
+  // ============================================================
+  // CLIENTE SHOPIFY
+  // ============================================================
 
-            variables: {
-              order:
-                orderInput,
-            },
-          }),
-        }
-      );
+  if (customerId) {
+    orderInput.customer = {
+      toAssociate: {
+        id: customerId,
+      },
+    };
+  }
 
-    if (!response.ok) {
-      throw new Error(
-        `Shopify GraphQL error: ${response.status}`
-      );
-    }
+  // ============================================================
+  // ENDEREÇO
+  // ============================================================
 
-    const result =
-      await response.json();
+  if (shippingAddress) {
+    orderInput.shippingAddress =
+      shippingAddress;
 
-    const userErrors =
-      result.data?.orderCreate?.userErrors || [];
+    orderInput.billingAddress =
+      shippingAddress;
+  }
 
-    if (userErrors.length > 0) {
-      throw new Error(
-        `Shopify orderCreate: ${JSON.stringify(
-          userErrors
-        )}`
-      );
-    }
+  // ============================================================
+  // LOG
+  // ============================================================
 
-    const order =
-      result.data?.orderCreate?.order;
+  console.log(
+    "[Shopify] Criando pedido recorrente:"
+  );
 
-    if (!order?.id) {
-      throw new Error(
-        "Shopify não retornou o ID do pedido"
-      );
-    }
+  console.log({
+    subscriptionId:
+      subscription.id,
 
-    console.log(
-      "[Shopify] ✅ Pedido recorrente criado:",
-      order.id
+    stripeInvoice:
+      invoice.id,
+
+    stripeSubscription:
+      invoice.subscription,
+
+    customerId,
+
+    customerEmail,
+
+    customerName,
+
+    amountPaid,
+
+    currency,
+  });
+
+  // ============================================================
+  // SHOPIFY API
+  // ============================================================
+
+  const response =
+    await fetch(
+      `https://${shop.domain}/admin/api/2026-07/graphql.json`,
+      {
+        method: "POST",
+
+        headers: {
+          "X-Shopify-Access-Token":
+            shop.accessToken,
+
+          "Content-Type":
+            "application/json",
+        },
+
+        body: JSON.stringify({
+          query: mutation,
+
+          variables: {
+            order: orderInput,
+          },
+        }),
+      }
     );
 
-    return order.id;
+  // ============================================================
+  // ERRO HTTP
+  // ============================================================
+
+  if (!response.ok) {
+    const errorText =
+      await response.text();
+
+    console.error(
+      "[Shopify] GraphQL HTTP error:",
+      response.status,
+      errorText
+    );
+
+    throw new Error(
+      `Shopify GraphQL error: ${response.status}`
+    );
   }
+
+  // ============================================================
+  // RESPOSTA
+  // ============================================================
+
+  const result =
+    await response.json();
+
+  console.log(
+    "[Shopify] GraphQL response:",
+    JSON.stringify(
+      result,
+      null,
+      2
+    )
+  );
+
+  // ============================================================
+  // GRAPHQL ERRORS
+  // ============================================================
+
+  if (
+    result.errors &&
+    result.errors.length > 0
+  ) {
+    throw new Error(
+      `Shopify GraphQL errors: ${JSON.stringify(
+        result.errors
+      )}`
+    );
+  }
+
+  // ============================================================
+  // USER ERRORS
+  // ============================================================
+
+  const userErrors =
+    result.data
+      ?.orderCreate
+      ?.userErrors || [];
+
+  if (userErrors.length > 0) {
+    throw new Error(
+      `Shopify orderCreate: ${JSON.stringify(
+        userErrors
+      )}`
+    );
+  }
+
+  // ============================================================
+  // PEDIDO
+  // ============================================================
+
+  const order =
+    result.data
+      ?.orderCreate
+      ?.order;
+
+  if (!order?.id) {
+    throw new Error(
+      "Shopify não retornou o ID do pedido"
+    );
+  }
+
+  console.log(
+    "[Shopify] ✅ Pedido recorrente criado:",
+    order.id
+  );
+
+  console.log(
+    "[Shopify] Nome do pedido:",
+    order.name
+  );
+
+  console.log(
+    "[Shopify] Cliente:",
+    order.customer
+  );
+
+  console.log(
+    "[Shopify] Total:",
+    order.totalPriceSet
+  );
+
+  return order.id;
+}
 
   // ============================================================
   // HELPERS
