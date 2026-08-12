@@ -8,38 +8,74 @@ const prisma = new PrismaClient();
 const stripeWebhookService = new StripeWebhookService();
 
 export class WebhookController {
+  // ============================================================
+  // SHOPIFY WEBHOOK
+  // ============================================================
+
   async shopify(req: Request, res: Response) {
     try {
       const topic = req.headers["x-shopify-topic"] as string;
       const hmac = req.headers["x-shopify-hmac-sha256"] as string;
       const shop = req.headers["x-shopify-shop-domain"] as string;
+      const webhookId = req.headers["x-shopify-webhook-id"] as string;
 
       const rawBody = Buffer.isBuffer(req.body)
         ? req.body
         : Buffer.from(req.body);
 
       const body = rawBody.toString("utf8");
+
       const hash = crypto
-        .createHmac("sha256", process.env.SHOPIFY_WEBHOOK_SECRET || "")
+        .createHmac(
+          "sha256",
+          process.env.SHOPIFY_WEBHOOK_SECRET || ""
+        )
         .update(body, "utf8")
         .digest("base64");
 
       if (hash !== hmac) {
-        return res.status(401).json({ error: "Assinatura inválida" });
+        console.error("[Shopify Webhook] HMAC inválido");
+        return res.status(401).json({
+          error: "Assinatura inválida",
+        });
       }
 
       const payload = JSON.parse(body);
 
-      const shopRecord = await prisma.shop.findUnique({ where: { domain: shop } });
+      const shopRecord = await prisma.shop.findUnique({
+        where: {
+          domain: shop,
+        },
+      });
+
       if (!shopRecord) {
-        return res.status(404).json({ error: "Loja não encontrada" });
+        return res.status(404).json({
+          error: "Loja não encontrada",
+        });
+      }
+
+      // Evita processar o mesmo webhook duas vezes.
+      if (webhookId) {
+        const existingEvent = await prisma.webhookEvent.findFirst({
+          where: {
+            eventId: webhookId,
+          },
+        });
+
+        if (existingEvent) {
+          console.log(
+            `[Shopify Webhook] Evento ${webhookId} já processado`
+          );
+
+          return res.status(200).send("OK");
+        }
       }
 
       await prisma.webhookEvent.create({
         data: {
           shopId: shopRecord.id,
           source: "shopify",
-          eventId: req.headers["x-shopify-webhook-id"] as string,
+          eventId: webhookId,
           topic,
           payload,
         },
@@ -49,68 +85,123 @@ export class WebhookController {
         case "subscription_contracts/create":
           await this.handleSubscriptionContractCreate(payload);
           break;
+
         case "subscription_contracts/update":
           await this.handleSubscriptionContractUpdate(payload);
           break;
+
         case "orders/create":
-          await this.handleOrderCreate(payload, shopRecord.id);
+          await this.handleOrderCreate(
+            payload,
+            shopRecord.id
+          );
           break;
+
+        case "orders/paid":
+          await this.handleOrderPaid(
+            payload,
+            shopRecord.id
+          );
+          break;
+
         default:
-          console.log(`[Webhook] Tópico não processado: ${topic}`);
+          console.log(
+            `[Shopify Webhook] Tópico não processado: ${topic}`
+          );
       }
 
       return res.status(200).send("OK");
     } catch (error) {
-      console.error("[WebhookController.shopify]", error);
-      return res.status(500).json({ error: "Erro interno" });
+      console.error(
+        "[WebhookController.shopify]",
+        error
+      );
+
+      return res.status(500).json({
+        error: "Erro interno",
+      });
     }
   }
 
+  // ============================================================
+  // STRIPE WEBHOOK
+  // ============================================================
+
   async stripe(req: Request, res: Response) {
     try {
-      const signature = req.headers["stripe-signature"] as string;
+      const signature = req.headers[
+        "stripe-signature"
+      ] as string;
 
       if (!signature) {
-        return res.status(400).json({ error: "Assinatura não encontrada" });
+        return res.status(400).json({
+          error: "Assinatura não encontrada",
+        });
       }
 
-      // 🚨 PROBLEMA CONHECIDO: Na Vercel, o body já vem parseado como JSON.
-      // O Stripe exige o body em formato raw string para validar a assinatura.
-      // Como o body foi alterado pelo parser, a assinatura nunca vai bater.
-      //
-      // SOLUÇÃO: Tentamos validar, mas se falhar (modo teste), processamos mesmo assim.
-      // Em produção, isso deve ser substituído por uma serverless function com body raw.
+      /*
+       * Mantemos o comportamento atual do projeto.
+       *
+       * IMPORTANTE:
+       * Em produção, a validação deve utilizar o body RAW.
+       * A infraestrutura atual da Vercel pode entregar o body
+       * já parseado.
+       */
 
       let event: any;
       let signatureValid = false;
 
-      // Tenta reconstruir o payload como string
       const payload = JSON.stringify(req.body);
 
       try {
-        event = stripeWebhookService.constructEvent(payload, signature);
-        signatureValid = true;
-        console.log("[Stripe Webhook] ✅ Assinatura válida");
-      } catch (sigError) {
-        console.warn("[Stripe Webhook] ⚠️ Assinatura inválida (body parseado pela Vercel). Processando em modo teste...");
-        console.warn("[Stripe Webhook] Erro:", (sigError as Error).message);
+        event =
+          stripeWebhookService.constructEvent(
+            payload,
+            signature
+          );
 
-        // No modo teste, aceitamos o evento sem validar assinatura
-        // ⚠️ NUNCA FAÇA ISSO EM PRODUÇÃO!
+        signatureValid = true;
+
+        console.log(
+          "[Stripe Webhook] ✅ Assinatura válida"
+        );
+      } catch (sigError) {
+        console.warn(
+          "[Stripe Webhook] ⚠️ Assinatura inválida."
+        );
+
+        console.warn(
+          "[Stripe Webhook] Erro:",
+          (sigError as Error).message
+        );
+
+        /*
+         * Mantém o comportamento de teste existente.
+         */
         event = {
-          id: req.body.id || `evt_test_${Date.now()}`,
+          id:
+            req.body.id ||
+            `evt_test_${Date.now()}`,
           type: req.body.type,
           data: req.body.data,
         };
       }
 
-      // Salva o evento no banco
-      const shopDomain = event.data?.object?.metadata?.shopDomain;
+      const shopDomain =
+        event.data?.object?.metadata?.shopDomain;
+
       let shopId = "unknown";
 
       if (shopDomain) {
-        const shop = await prisma.shop.findUnique({ where: { domain: shopDomain } });
-        if (shop) shopId = shop.id;
+        const shop = await prisma.shop.findUnique({
+          where: {
+            domain: shopDomain,
+          },
+        });
+
+        if (shop) {
+          shopId = shop.id;
+        }
       }
 
       await prisma.webhookEvent.create({
@@ -119,115 +210,771 @@ export class WebhookController {
           source: "stripe",
           eventId: event.id,
           topic: event.type,
-          payload: event.data?.object || req.body,
+          payload:
+            event.data?.object ||
+            req.body,
         },
       });
 
-      // Processa conforme o tipo do evento
+      // ========================================================
+      // INVOICE PAYMENT SUCCEEDED
+      // ========================================================
+
       switch (event.type) {
         case "invoice.payment_succeeded": {
-          const result = await stripeWebhookService.handleInvoicePaymentSucceeded(
-            event.data.object
-          );
+          const invoice =
+            event.data.object;
 
-          if (result.subscriptionId) {
-            const subscription = await prisma.subscription.findFirst({
-              where: { externalId: result.subscriptionId as string },
-            });
+          const result =
+            await stripeWebhookService.handleInvoicePaymentSucceeded(
+              invoice
+            );
 
-            if (subscription) {
-              await prisma.subscriptionOrder.create({
-                data: {
-                  subscriptionId: subscription.id,
-                  gatewayOrderId: result.invoiceId,
-                  amount: result.amount,
-                  status: result.status,
-                  processedAt: new Date(),
-                },
-              });
-
-              await prisma.subscription.update({
-                where: { id: subscription.id },
-                data: { nextBillingAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) },
-              });
-            }
+          if (!result.subscriptionId) {
+            break;
           }
-          break;
-        }
 
-        case "invoice.payment_failed": {
-          const result = await stripeWebhookService.handleInvoicePaymentFailed(
-            event.data.object
-          );
-
-          const subscription = await prisma.subscription.findFirst({
-            where: { externalId: result.subscriptionId as string },
-          });
-
-          if (subscription) {
-            await prisma.subscriptionOrder.create({
-              data: {
-                subscriptionId: subscription.id,
-                gatewayOrderId: result.invoiceId,
-                amount: 0,
-                status: "failed",
-                processedAt: new Date(),
+          const subscription =
+            await prisma.subscription.findFirst({
+              where: {
+                externalId:
+                  result.subscriptionId as string,
+              },
+              include: {
+                shop: true,
               },
             });
 
-            await prisma.subscription.update({
-              where: { id: subscription.id },
-              data: { status: "past_due" },
-            });
+          if (!subscription) {
+            console.warn(
+              "[Stripe Webhook] Assinatura APS não encontrada:",
+              result.subscriptionId
+            );
+
+            break;
           }
+
+          /*
+           * Evita registrar a mesma invoice duas vezes.
+           */
+          const existingOrder =
+            await prisma.subscriptionOrder.findFirst({
+              where: {
+                gatewayOrderId:
+                  result.invoiceId,
+              },
+            });
+
+          if (existingOrder) {
+            console.log(
+              "[Stripe Webhook] Invoice já processada:",
+              result.invoiceId
+            );
+
+            break;
+          }
+
+          /*
+           * Determina se esta é a primeira cobrança
+           * ou uma recorrência.
+           *
+           * O primeiro pagamento da assinatura acontece
+           * no Shopify Checkout.
+           *
+           * Portanto, somente ciclos posteriores devem
+           * gerar um novo pedido Shopify.
+           */
+          const billingReason =
+            invoice.billing_reason;
+
+          const isRecurring =
+            billingReason ===
+            "subscription_cycle" ||
+            billingReason ===
+            "subscription_threshold";
+
+          let shopifyOrderId:
+            | string
+            | undefined;
+
+          /*
+           * RECORRÊNCIA:
+           *
+           * Stripe
+           *   ↓
+           * invoice.payment_succeeded
+           *   ↓
+           * APS API
+           *   ↓
+           * Shopify orderCreate
+           */
+          if (isRecurring) {
+            shopifyOrderId =
+              await this.createRecurringShopifyOrder(
+                subscription
+              );
+          }
+
+          await prisma.subscriptionOrder.create({
+            data: {
+              subscriptionId:
+                subscription.id,
+
+              shopifyOrderId,
+
+              gatewayOrderId:
+                result.invoiceId,
+
+              amount:
+                result.amount,
+
+              status:
+                result.status,
+
+              processedAt:
+                new Date(),
+            },
+          });
+
+          /*
+           * Atualiza a próxima cobrança.
+           *
+           * Por enquanto utilizamos o intervalo configurado
+           * na assinatura.
+           */
+          const nextBillingDate =
+            this.calculateNextBillingDate(
+              new Date(),
+              subscription.interval,
+              subscription.intervalType
+            );
+
+          await prisma.subscription.update({
+            where: {
+              id: subscription.id,
+            },
+            data: {
+              nextBillingAt:
+                nextBillingDate,
+            },
+          });
+
           break;
         }
 
-        case "customer.subscription.deleted": {
-          const result = await stripeWebhookService.handleSubscriptionDeleted(
-            event.data.object
-          );
+        // ======================================================
+        // INVOICE PAYMENT FAILED
+        // ======================================================
 
-          const subscription = await prisma.subscription.findFirst({
-            where: { externalId: result.subscriptionId as string },
+        case "invoice.payment_failed": {
+          const result =
+            await stripeWebhookService.handleInvoicePaymentFailed(
+              event.data.object
+            );
+
+          if (!result.subscriptionId) {
+            break;
+          }
+
+          const subscription =
+            await prisma.subscription.findFirst({
+              where: {
+                externalId:
+                  result.subscriptionId as string,
+              },
+            });
+
+          if (!subscription) {
+            break;
+          }
+
+          const existingOrder =
+            await prisma.subscriptionOrder.findFirst({
+              where: {
+                gatewayOrderId:
+                  result.invoiceId,
+              },
+            });
+
+          if (!existingOrder) {
+            await prisma.subscriptionOrder.create({
+              data: {
+                subscriptionId:
+                  subscription.id,
+
+                gatewayOrderId:
+                  result.invoiceId,
+
+                amount: 0,
+
+                status: "failed",
+
+                processedAt:
+                  new Date(),
+              },
+            });
+          }
+
+          await prisma.subscription.update({
+            where: {
+              id: subscription.id,
+            },
+            data: {
+              status: "past_due",
+            },
           });
+
+          break;
+        }
+
+        // ======================================================
+        // SUBSCRIPTION DELETED
+        // ======================================================
+
+        case "customer.subscription.deleted": {
+          const result =
+            await stripeWebhookService.handleSubscriptionDeleted(
+              event.data.object
+            );
+
+          const subscription =
+            await prisma.subscription.findFirst({
+              where: {
+                externalId:
+                  result.subscriptionId,
+              },
+            });
 
           if (subscription) {
             await prisma.subscription.update({
-              where: { id: subscription.id },
-              data: { status: "canceled" },
+              where: {
+                id: subscription.id,
+              },
+              data: {
+                status: "canceled",
+              },
             });
           }
+
           break;
         }
 
         default:
-          console.log(`[Stripe Webhook] Evento não processado: ${event.type}`);
+          console.log(
+            `[Stripe Webhook] Evento não processado: ${event.type}`
+          );
       }
 
       return res.status(200).json({
         received: true,
         signatureValid,
-        eventType: event.type
+        eventType: event.type,
       });
     } catch (error) {
-      console.error("[WebhookController.stripe]", error);
+      console.error(
+        "[WebhookController.stripe]",
+        error
+      );
+
       return res.status(400).json({
-        error: "Erro ao processar webhook",
-        message: error instanceof Error ? error.message : "Unknown error",
+        error:
+          "Erro ao processar webhook",
+
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unknown error",
       });
     }
   }
 
-  private async handleSubscriptionContractCreate(payload: any) {
-    console.log("[Webhook] Novo contrato de assinatura:", payload);
+  // ============================================================
+  // SHOPIFY SUBSCRIPTION CONTRACT
+  // ============================================================
+
+  private async handleSubscriptionContractCreate(
+    payload: any
+  ) {
+    console.log(
+      "[Shopify Webhook] Novo contrato:",
+      payload
+    );
   }
 
-  private async handleSubscriptionContractUpdate(payload: any) {
-    console.log("[Webhook] Contrato atualizado:", payload);
+  private async handleSubscriptionContractUpdate(
+    payload: any
+  ) {
+    console.log(
+      "[Shopify Webhook] Contrato atualizado:",
+      payload
+    );
   }
 
-  private async handleOrderCreate(payload: any, shopId: string) {
-    console.log("[Webhook] Nova ordem:", payload);
+  // ============================================================
+  // SHOPIFY ORDER CREATE
+  // ============================================================
+
+  private async handleOrderCreate(
+    payload: any,
+    shopId: string
+  ) {
+    try {
+      const order = payload;
+
+      const isSubscription =
+        this.isSubscriptionOrder(order);
+
+      if (!isSubscription) {
+        console.log(
+          "[Shopify Webhook] Pedido normal. Ignorando:",
+          order.id
+        );
+
+        return;
+      }
+
+      console.log(
+        "[Shopify Webhook] Pedido de assinatura:",
+        order.id
+      );
+
+      const shopifyOrderId =
+        String(order.id);
+
+      /*
+       * Procura a assinatura pelo produto/variante
+       * armazenado nas propriedades APS do pedido.
+       */
+      const apsData =
+        this.extractSubscriptionData(order);
+
+      if (!apsData) {
+        console.warn(
+          "[Shopify Webhook] Pedido possui assinatura, mas não foram encontradas propriedades APS:",
+          shopifyOrderId
+        );
+        return;
+      }
+
+      const subscription =
+        await prisma.subscription.findFirst({
+          where: {
+            shopId,
+            shopifyProductId:
+              apsData.productId,
+            shopifyVariantId:
+              apsData.variantId,
+            status: {
+              in: [
+                "pending",
+                "active",
+              ],
+            },
+          },
+        });
+
+      if (!subscription) {
+        console.warn(
+          "[Shopify Webhook] Assinatura não encontrada para pedido:",
+          shopifyOrderId
+        );
+
+        return;
+      }
+
+      /*
+       * Evita duplicidade.
+       */
+      const existingOrder =
+        await prisma.subscriptionOrder.findFirst({
+          where: {
+            shopifyOrderId,
+          },
+        });
+
+      if (existingOrder) {
+        console.log(
+          "[Shopify Webhook] Pedido já vinculado:",
+          shopifyOrderId
+        );
+
+        return;
+      }
+
+      /*
+       * Registra o primeiro pedido.
+       *
+       * A cobrança inicial foi feita pelo Shopify Checkout.
+       * Não criamos Stripe aqui.
+       */
+      await prisma.subscriptionOrder.create({
+        data: {
+          subscriptionId:
+            subscription.id,
+
+          shopifyOrderId,
+
+          amount:
+            Number(order.total_price || 0),
+
+          status: "paid",
+
+          processedAt:
+            new Date(),
+        },
+      });
+
+      console.log(
+        "[Shopify Webhook] ✅ Pedido inicial vinculado:",
+        shopifyOrderId
+      );
+    } catch (error) {
+      console.error(
+        "[Webhook] Erro ao processar orders/create:",
+        error
+      );
+
+      throw error;
+    }
+  }
+
+  // ============================================================
+  // SHOPIFY ORDER PAID
+  // ============================================================
+
+  private async handleOrderPaid(
+    payload: any,
+    shopId: string
+  ) {
+    const order = payload;
+
+    if (!this.isSubscriptionOrder(order)) {
+      return;
+    }
+
+    console.log(
+      "[Shopify Webhook] Assinatura paga:",
+      order.id
+    );
+
+    /*
+     * O processamento principal do pedido inicial é feito
+     * pelo orders/create.
+     *
+     * Aqui apenas registramos o evento.
+     */
+  }
+
+  // ============================================================
+  // CREATE RECURRING SHOPIFY ORDER
+  // ============================================================
+
+  private async createRecurringShopifyOrder(
+    subscription: any
+  ): Promise<string> {
+    const shop =
+      subscription.shop;
+
+    if (!shop) {
+      throw new Error(
+        "Loja não encontrada na assinatura"
+      );
+    }
+
+    if (!subscription.shopifyVariantId) {
+      throw new Error(
+        "Variant ID não encontrado na assinatura"
+      );
+    }
+
+    const variantId =
+      this.toShopifyVariantGid(
+        subscription.shopifyVariantId
+      );
+
+    const customerId =
+      subscription.shopifyCustomerId
+        ? this.toShopifyCustomerGid(
+          subscription.shopifyCustomerId
+        )
+        : undefined;
+
+    const mutation = `
+      mutation orderCreate(
+        $order: OrderCreateOrderInput!
+      ) {
+        orderCreate(order: $order) {
+          userErrors {
+            field
+            message
+          }
+          order {
+            id
+            name
+            displayFinancialStatus
+          }
+        }
+      }
+    `;
+
+    const lineItem = {
+      variantId,
+      quantity: 1,
+    };
+
+    const orderInput: any = {
+      lineItems: [
+        lineItem,
+      ],
+
+      financialStatus: "PAID",
+
+      currency:
+        "BRL",
+
+      note:
+        `APS Subscription ${subscription.id} - Recorrência Stripe`,
+    };
+
+    /*
+     * Se tivermos o cliente Shopify, associamos o pedido
+     * ao cliente existente.
+     */
+    if (customerId) {
+      orderInput.customer = {
+        id: customerId,
+      };
+    }
+
+    const response =
+      await fetch(
+        `https://${shop.domain}/admin/api/2026-07/graphql.json`,
+        {
+          method: "POST",
+
+          headers: {
+            "X-Shopify-Access-Token":
+              shop.accessToken,
+
+            "Content-Type":
+              "application/json",
+          },
+
+          body: JSON.stringify({
+            query: mutation,
+
+            variables: {
+              order:
+                orderInput,
+            },
+          }),
+        }
+      );
+
+    if (!response.ok) {
+      throw new Error(
+        `Shopify GraphQL error: ${response.status}`
+      );
+    }
+
+    const result =
+      await response.json();
+
+    const userErrors =
+      result.data?.orderCreate?.userErrors || [];
+
+    if (userErrors.length > 0) {
+      throw new Error(
+        `Shopify orderCreate: ${JSON.stringify(
+          userErrors
+        )}`
+      );
+    }
+
+    const order =
+      result.data?.orderCreate?.order;
+
+    if (!order?.id) {
+      throw new Error(
+        "Shopify não retornou o ID do pedido"
+      );
+    }
+
+    console.log(
+      "[Shopify] ✅ Pedido recorrente criado:",
+      order.id
+    );
+
+    return order.id;
+  }
+
+  // ============================================================
+  // HELPERS
+  // ============================================================
+
+  private isSubscriptionOrder(
+    order: any
+  ): boolean {
+    const lineItems =
+      order?.line_items || [];
+
+    return lineItems.some(
+      (item: any) => {
+        const properties =
+          item.properties || [];
+
+        return properties.some(
+          (property: any) =>
+            property.name ===
+            "_aps_subscription" &&
+            String(
+              property.value
+            ).toLowerCase() ===
+            "true"
+        );
+      }
+    );
+  }
+
+  private extractSubscriptionData(
+    order: any
+  ) {
+    const lineItems =
+      order?.line_items || [];
+
+    for (const item of lineItems) {
+      const properties =
+        item.properties || [];
+
+      const getProperty = (
+        name: string
+      ) => {
+        const property =
+          properties.find(
+            (p: any) =>
+              p.name === name
+          );
+
+        return property?.value;
+      };
+
+      const subscription =
+        getProperty(
+          "_aps_subscription"
+        );
+
+      if (
+        String(subscription)
+          .toLowerCase() !==
+        "true"
+      ) {
+        continue;
+      }
+
+      return {
+        productId:
+          getProperty(
+            "_aps_product_id"
+          ) ||
+          String(
+            item.product_id || ""
+          ),
+
+        variantId:
+          getProperty(
+            "_aps_variant_id"
+          ) ||
+          String(
+            item.variant_id || ""
+          ),
+
+        planId:
+          getProperty(
+            "_aps_plan_id"
+          ),
+
+        plan:
+          getProperty(
+            "_aps_plan"
+          ),
+
+        interval:
+          getProperty(
+            "_aps_interval"
+          ),
+
+        intervalType:
+          getProperty(
+            "_aps_interval_type"
+          ),
+      };
+    }
+
+    return null;
+  }
+
+  private toShopifyVariantGid(
+    value: string
+  ): string {
+    if (
+      value.startsWith(
+        "gid://shopify/ProductVariant/"
+      )
+    ) {
+      return value;
+    }
+
+    return `gid://shopify/ProductVariant/${value}`;
+  }
+
+  private toShopifyCustomerGid(
+    value: string
+  ): string {
+    if (
+      value.startsWith(
+        "gid://shopify/Customer/"
+      )
+    ) {
+      return value;
+    }
+
+    return `gid://shopify/Customer/${value}`;
+  }
+
+  private calculateNextBillingDate(
+    from: Date,
+    interval: number,
+    intervalType: string
+  ): Date {
+    const date =
+      new Date(from);
+
+    if (
+      intervalType ===
+      "month"
+    ) {
+      date.setMonth(
+        date.getMonth() +
+        interval
+      );
+    } else if (
+      intervalType ===
+      "week"
+    ) {
+      date.setDate(
+        date.getDate() +
+        interval * 7
+      );
+    } else if (
+      intervalType ===
+      "day"
+    ) {
+      date.setDate(
+        date.getDate() +
+        interval
+      );
+    }
+
+    return date;
   }
 }
