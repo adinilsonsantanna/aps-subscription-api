@@ -955,12 +955,7 @@ export class WebhookController {
         subscription.shopifyVariantId
       );
 
-    const customerId =
-      subscription.shopifyCustomerId
-        ? this.toShopifyCustomerGid(
-          subscription.shopifyCustomerId
-        )
-        : undefined;
+
 
     // ============================================================
     // DADOS DA INVOICE STRIPE
@@ -1152,6 +1147,15 @@ export class WebhookController {
 
       phone: customerPhone,
 
+      customer: {
+        toUpsert: {
+          email: customerEmail,
+          firstName,
+          lastName,
+          phone: customerPhone,
+        },
+      },
+
       note:
         `APS Subscription ${subscription.id} - ` +
         `Recorrência Stripe - Invoice ${invoice.id}`,
@@ -1193,13 +1197,7 @@ export class WebhookController {
     // CLIENTE SHOPIFY
     // ============================================================
 
-    if (customerId) {
-      orderInput.customer = {
-        toAssociate: {
-          id: customerId,
-        },
-      };
-    }
+
 
     // ============================================================
     // ENDEREÇO
@@ -1231,7 +1229,7 @@ export class WebhookController {
       stripeSubscription:
         invoice.subscription,
 
-      customerId,
+
 
       customerEmail,
 
@@ -1366,7 +1364,7 @@ export class WebhookController {
       order.totalPriceSet
     );
 
-   
+
     return order.id;
   }
 
