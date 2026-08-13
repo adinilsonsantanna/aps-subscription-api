@@ -1,10 +1,10 @@
 import { Request, Response } from "express";
 import { PrismaClient } from "@prisma/client";
 import { GatewayFactory } from "../gateways/gateway.factory";
-import { ShopifyAdminService } from "../shopify/services/ShopifyAdminService";
+
 
 const prisma = new PrismaClient();
-const shopifyAdminService = new ShopifyAdminService();
+
 
 export class SubscriptionController {
     async listByShop(req: Request, res: Response) {
@@ -55,30 +55,82 @@ export class SubscriptionController {
             const nextBillingDate = new Date();
             nextBillingDate.setMonth(nextBillingDate.getMonth() + (intervalType === "month" ? interval : 0));
 
-            const shopifyContract = await shopifyAdminService.createSubscriptionContract(
-                shop.domain,
-                shop.accessToken,
+            const appUrl = process.env.SHOPIFY_APP_URL || "";
+            const appApiKey = process.env.SHOPIFY_APP_API_KEY || "";
+
+            if (!appUrl || !appApiKey) {
+                throw new Error(
+                    "SHOPIFY_APP_URL ou SHOPIFY_APP_API_KEY não configurado"
+                );
+            }
+
+            const shopifyInput = {
+                customerId: shopifyCustomerId,
+                nextBillingDate: nextBillingDate.toISOString(),
+                currencyCode: currency || "BRL",
+                billingPolicy: {
+                    interval: intervalType,
+                    intervalCount: interval,
+                },
+                deliveryPolicy: {
+                    interval: intervalType,
+                    intervalCount: interval,
+                },
+                lines: [
+                    {
+                        productVariantId: shopifyVariantId,
+                        quantity: 1,
+                        currentPrice: String(priceAmount / 100),
+                    },
+                ],
+            };
+
+            const shopifyResponse = await fetch(
+                `${appUrl}/api/shopify/create-subscription-contract`,
                 {
-                    customerId: shopifyCustomerId,
-                    nextBillingDate: nextBillingDate.toISOString(),
-                    currencyCode: currency || "BRL",
-                    billingPolicy: {
-                        interval: intervalType,
-                        intervalCount: interval,
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "x-api-key": appApiKey,
                     },
-                    deliveryPolicy: {
-                        interval: intervalType,
-                        intervalCount: interval,
-                    },
-                    lines: [
-                        {
-                            productVariantId: shopifyVariantId,
-                            quantity: 1,
-                            currentPrice: String(priceAmount / 100),
-                        },
-                    ],
+                    body: JSON.stringify({
+                        shop: shop.domain,
+                        input: shopifyInput,
+                    }),
                 }
             );
+
+            const shopifyContract = await shopifyResponse.json();
+
+            if (!shopifyResponse.ok) {
+                console.error(
+                    "[SubscriptionController] Erro no App Shopify:",
+                    shopifyResponse.status,
+                    shopifyContract
+                );
+
+                return res.status(502).json({
+                    error: "Erro ao criar contrato no Shopify",
+                    details: shopifyContract,
+                });
+            }
+
+            if (!shopifyContract.success) {
+                return res.status(400).json({
+                    error: "Erro ao criar contrato no Shopify",
+                    details: shopifyContract,
+                });
+            }
+
+            const shopifyContractId =
+                shopifyContract.contract?.id;
+
+            if (!shopifyContractId) {
+                return res.status(502).json({
+                    error: "Shopify não retornou o ID do contrato",
+                    details: shopifyContract,
+                });
+            }
 
             if (shopifyContract.data?.subscriptionContractCreate?.userErrors?.length > 0) {
                 return res.status(400).json({
@@ -87,7 +139,7 @@ export class SubscriptionController {
                 });
             }
 
-            const shopifyContractId = shopifyContract.data?.subscriptionContractCreate?.contract?.id;
+
 
             const gatewayInstance = GatewayFactory.create(selectedGateway);
 
