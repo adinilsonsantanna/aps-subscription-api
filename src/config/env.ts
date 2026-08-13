@@ -11,6 +11,8 @@ export const env = {
   STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY || "",
   STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET || "",
   STRIPE_PUBLISHABLE_KEY: process.env.STRIPE_PUBLISHABLE_KEY || "",
+  SHOPIFY_APP_URL: process.env.SHOPIFY_APP_URL || "",
+  SHOPIFY_APP_API_KEY: process.env.SHOPIFY_APP_API_KEY || "",
 };
 
 if (!env.STRIPE_SECRET_KEY) {
