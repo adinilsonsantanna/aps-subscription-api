@@ -9,10 +9,12 @@
   },
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "typecheck": "prisma generate && tsc --noEmit",
     "build": "prisma generate && tsc",
+    "migrate:deploy": "prisma migrate deploy",
     "postinstall": "prisma generate",
     "start": "node dist/server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "npm run build && node --test dist/src/shopify/events/__tests__/shopify-event.service.test.js"
   },
   "repository": {
     "type": "git",

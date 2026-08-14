@@ -575,27 +575,32 @@ export class WebhookController {
           // PRÓXIMA COBRANÇA
           // ----------------------------------------------------------
 
-          const nextBillingDate =
-            this.calculateNextBillingDate(
-              new Date(),
-              subscription.interval,
-              subscription.intervalType
+          if (
+            subscription.interval !== null &&
+            subscription.intervalType !== null
+          ) {
+            const nextBillingDate =
+              this.calculateNextBillingDate(
+                new Date(),
+                subscription.interval,
+                subscription.intervalType
+              );
+
+            await prisma.subscription.update({
+              where: {
+                id: subscription.id,
+              },
+              data: {
+                nextBillingAt:
+                  nextBillingDate,
+              },
+            });
+
+            console.log(
+              "[Stripe Webhook] ✅ Próxima cobrança atualizada:",
+              nextBillingDate
             );
-
-          await prisma.subscription.update({
-            where: {
-              id: subscription.id,
-            },
-            data: {
-              nextBillingAt:
-                nextBillingDate,
-            },
-          });
-
-          console.log(
-            "[Stripe Webhook] ✅ Próxima cobrança atualizada:",
-            nextBillingDate
-          );
+          }
 
           console.log(
             "[Stripe Webhook] 🏁 FIM invoice.payment_succeeded"

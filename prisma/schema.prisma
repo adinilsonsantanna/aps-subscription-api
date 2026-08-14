@@ -8,38 +8,51 @@ datasource db {
 }
 
 model Shop {
-  id            String         @id @default(cuid())
-  shopifyShopId String?        @unique
-  name          String
-  domain        String         @unique
-  accessToken   String         @db.Text
-  scopes        String         @db.Text
-  gateway       String         @default("stripe")
-  isActive      Boolean        @default(true)
-  subscriptions Subscription[]
-  webhooks      WebhookEvent[]
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  id              String                       @id @default(cuid())
+  shopifyShopId   String?                      @unique
+  name            String
+  domain          String                       @unique
+  accessToken     String                       @db.Text
+  scopes          String                       @db.Text
+  gateway         String                       @default("stripe")
+  isActive        Boolean                      @default(true)
+  subscriptions   Subscription[]
+  webhooks        WebhookEvent[]
+  billingAttempts SubscriptionBillingAttempt[]
+  createdAt       DateTime                     @default(now())
+  updatedAt       DateTime                     @updatedAt
 }
 
 model Subscription {
-  id                    String             @id @default(cuid())
+  id                    String                       @id @default(cuid())
   shopId                String
-  shop                  Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shop                  Shop                         @relation(fields: [shopId], references: [id], onDelete: Cascade)
   orders                SubscriptionOrder[]
-  shopifyCustomerId     String
-  shopifyProductId      String
-  shopifyVariantId      String
-  gateway               String
+  shopifyContractId     String?
+  shopifyOriginOrderId  String?
+  shopifyCustomerId     String?
+  shopifyProductId      String?
+  shopifyVariantId      String?
+  gateway               String?
   externalId            String?
   stripeCustomerId      String?
   stripePaymentMethodId String?
-  status                String             @default("active")
-  interval              Int
-  intervalType          String
-  nextBillingAt         DateTime
-  createdAt             DateTime           @default(now())
-  updatedAt             DateTime           @updatedAt
+  status                String?
+  currencyCode          String?
+  billingInterval       String?
+  billingIntervalCount  Int?
+  deliveryInterval      String?
+  deliveryIntervalCount Int?
+  interval              Int?
+  intervalType          String?
+  nextBillingAt         DateTime?
+  lastPaymentStatus     String?
+  billingAttempts       SubscriptionBillingAttempt[]
+  createdAt             DateTime                     @default(now())
+  updatedAt             DateTime                     @updatedAt
+
+  @@unique([shopId, shopifyContractId])
+  @@index([shopifyContractId])
 }
 
 model SubscriptionOrder {
@@ -55,13 +68,41 @@ model SubscriptionOrder {
 }
 
 model WebhookEvent {
-  id        String   @id @default(cuid())
-  shopId    String?  // <-- ALTERADO: tornou-se opcional
-  shop      Shop?    @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  source    String
-  eventId   String   @unique
-  topic     String
-  payload   Json
-  processed Boolean  @default(false)
-  createdAt DateTime @default(now())
+  id           String    @id @default(cuid())
+  shopId       String? // <-- ALTERADO: tornou-se opcional
+  shop         Shop?     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  source       String
+  eventId      String    @unique
+  topic        String
+  payload      Json
+  processed    Boolean   @default(false)
+  receivedAt   DateTime  @default(now())
+  processedAt  DateTime?
+  errorMessage String?
+  createdAt    DateTime  @default(now())
+}
+
+model SubscriptionBillingAttempt {
+  id                      String       @id @default(cuid())
+  shopId                  String
+  shop                    Shop         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  subscriptionId          String
+  subscription            Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  shopifyContractId       String
+  shopifyBillingAttemptId String?
+  idempotencyKey          String?
+  webhookEventId          String?      @unique
+  status                  String
+  errorCode               String?
+  errorMessage            String?
+  shopifyOrderId          String?
+  nextActionUrl           String?
+  attemptedAt             DateTime?
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+
+  @@unique([shopId, shopifyBillingAttemptId])
+  @@unique([shopId, idempotencyKey])
+  @@index([shopId, shopifyContractId])
+  @@index([subscriptionId, status])
 }

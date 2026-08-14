@@ -28,6 +28,11 @@ export class SubscriptionController {
     }
 
     async create(req: Request, res: Response) {
+        // Deprecated: Shopify Checkout now creates subscription contracts natively.
+        if (process.env.ENABLE_LEGACY_SUBSCRIPTION_FLOW !== "true") {
+            return res.status(410).json({ error: "Legacy subscription flow is disabled" });
+        }
+
         try {
             const {
                 domain,
