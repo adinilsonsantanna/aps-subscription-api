@@ -37,11 +37,6 @@ export default async function handler(
     req: VercelRequest,
     res: VercelResponse
 ) {
-    // Deprecated: Shopify billing-attempt webhooks are the source of truth.
-    if (process.env.ENABLE_LEGACY_SUBSCRIPTION_FLOW !== "true") {
-        return res.status(200).json({ received: true, legacyFlowDisabled: true });
-    }
-
     console.log(
         "[Stripe Webhook Adapter] ====== INÍCIO ======"
     );
@@ -138,6 +133,7 @@ export default async function handler(
          */
         (req as any).body =
             event;
+        (req as any).stripeEventVerified = true;
 
         console.log(
             "[Stripe Webhook Adapter] 🚀 Chamando WebhookController.stripe()..."

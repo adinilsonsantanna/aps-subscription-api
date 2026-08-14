@@ -72,7 +72,6 @@ export function contractUpdatePatch(contract: NormalizedShopifyContract) {
     interval: contract.billingPolicy.intervalCount,
     intervalType: contract.billingPolicy.interval.toLowerCase(),
     nextBillingAt: contract.nextBillingAt ? new Date(contract.nextBillingAt) : undefined,
-    lastPaymentStatus: contract.originOrder?.financialStatus?.toUpperCase(),
   } satisfies Prisma.SubscriptionUncheckedUpdateInput;
 }
 
@@ -91,10 +90,10 @@ export function billingAttemptDataFromPayload(
   payload: ShopifyEventPayload,
 ) {
   const status = topic.endsWith("/success")
-    ? "SUCCEEDED"
+    ? "succeeded"
     : topic.endsWith("/failure")
-      ? "FAILED"
-      : "CHALLENGED";
+      ? "failed"
+      : "challenged";
   const nestedOrder = optionalObject(payload, "order");
 
   return {
@@ -231,7 +230,12 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
     shopId: string,
   ) {
     const shopifyContractId = contract.id;
-    const patch = Object.fromEntries(Object.entries(contractUpdatePatch(contract)).filter(([, value]) => value !== undefined));
+    const requestedPatch = Object.fromEntries(Object.entries(contractUpdatePatch(contract)).filter(([, value]) => value !== undefined));
+    const existing = await transaction.subscription.findUnique({ where: { shopId_shopifyContractId: { shopId, shopifyContractId } }, select: { status: true, lastPaymentStatus: true } });
+    const terminal = ["cancelled", "expired", "failed"].includes(String(existing?.status).toLowerCase());
+    const patch = terminal && contract.status.toLowerCase() === "active"
+      ? Object.fromEntries(Object.entries(requestedPatch).filter(([key]) => key !== "status"))
+      : requestedPatch;
     const subscription = await transaction.subscription.upsert({
       where: { shopId_shopifyContractId: { shopId, shopifyContractId } },
       create: { shopId, shopifyContractId, ...newShopifySubscriptionData(contract) },
@@ -241,6 +245,12 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
     if (subscription.gateway === null) {
       await transaction.subscription.update({ where: { id: subscription.id }, data: { gateway: "shopify" } });
     }
+    const newStatus = terminal && contract.status.toLowerCase() === "active" ? existing?.status : contract.status.toLowerCase();
+    if (newStatus) await transaction.subscriptionStatusHistory.upsert({
+      where: { source_sourceEventId: { source: "shopify_webhook", sourceEventId: contract.revisionId || `contract:${shopId}:${shopifyContractId}:${newStatus}` } },
+      create: { subscriptionId: subscription.id, previousStatus: existing?.status, newStatus, previousPaymentStatus: existing?.lastPaymentStatus, newPaymentStatus: existing?.lastPaymentStatus, source: "shopify_webhook", sourceEventId: contract.revisionId || `contract:${shopId}:${shopifyContractId}:${newStatus}` },
+      update: {},
+    });
     await this.syncContractLines(transaction, subscription.id, contract);
   }
 
@@ -290,7 +300,7 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
       where: { shopId_shopifyContractId: { shopId, shopifyContractId } },
       create: { shopId, shopifyContractId },
       update: {},
-      select: { id: true },
+      select: { id: true, status: true },
     });
 
     const attempt = billingAttemptDataFromPayload(topic, payload);
@@ -311,6 +321,11 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
     await transaction.subscription.update({
       where: { id: subscription.id },
       data: { lastPaymentStatus: attempt.status },
+    });
+    await transaction.subscriptionStatusHistory.upsert({
+      where: { source_sourceEventId: { source: "shopify_webhook", sourceEventId: webhookEventId } },
+      create: { subscriptionId: subscription.id, newStatus: subscription.status || "active", newPaymentStatus: attempt.status, source: "shopify_webhook", sourceEventId: webhookEventId },
+      update: {},
     });
   }
 }

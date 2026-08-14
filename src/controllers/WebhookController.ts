@@ -278,6 +278,18 @@ export class WebhookController {
         }
 
         if (!shopId) {
+          const externalId = event.type.startsWith("customer.subscription.")
+            ? stripeObject?.id
+            : typeof stripeObject?.subscription === "string"
+              ? stripeObject.subscription
+              : stripeObject?.parent?.subscription_details?.subscription;
+          if (externalId) {
+            const knownSubscription = await prisma.subscription.findFirst({ where: { externalId, gateway: "stripe" }, select: { shopId: true } });
+            shopId = knownSubscription?.shopId || null;
+          }
+        }
+
+        if (!shopId) {
           console.error(
             "[Stripe Webhook] ❌ Não foi possível identificar a loja."
           );
@@ -313,6 +325,43 @@ export class WebhookController {
       // ========================================================
 
       switch (event.type) {
+        case "customer.subscription.updated":
+        case "customer.subscription.paused":
+        case "customer.subscription.resumed": {
+          const stripeSubscription = event.data.object;
+          const subscription = await prisma.subscription.findFirst({ where: { externalId: stripeSubscription.id, gateway: "stripe" } });
+          if (subscription) {
+            const native = String(stripeSubscription.status || "").toLowerCase();
+            const nextStatus = stripeSubscription.pause_collection || native === "paused" ? "paused"
+              : native === "canceled" ? "cancelled"
+              : native === "incomplete_expired" ? "expired"
+              : native === "unpaid" ? "failed"
+              : native === "active" || native === "trialing" ? "active"
+              : subscription.status;
+            const terminal = ["cancelled", "expired", "failed"].includes(String(subscription.status).toLowerCase());
+            if (nextStatus && !(terminal && nextStatus === "active")) {
+              await prisma.$transaction([
+                prisma.subscription.update({ where: { id: subscription.id }, data: { status: nextStatus, ...(native === "past_due" ? { lastPaymentStatus: "failed" } : {}) } }),
+                prisma.subscriptionStatusHistory.create({ data: { subscriptionId: subscription.id, previousStatus: subscription.status, newStatus: nextStatus, previousPaymentStatus: subscription.lastPaymentStatus, newPaymentStatus: native === "past_due" ? "failed" : subscription.lastPaymentStatus, source: "stripe_webhook", sourceEventId: event.id } }),
+              ]);
+            }
+          }
+          break;
+        }
+
+        case "invoice.payment_action_required": {
+          const invoice = event.data.object;
+          const stripeSubscriptionId = typeof invoice.subscription === "string" ? invoice.subscription : invoice.parent?.subscription_details?.subscription;
+          if (stripeSubscriptionId) {
+            const subscription = await prisma.subscription.findFirst({ where: { externalId: stripeSubscriptionId, gateway: "stripe" } });
+            if (subscription) await prisma.$transaction([
+              prisma.subscription.update({ where: { id: subscription.id }, data: { lastPaymentStatus: "challenged" } }),
+              prisma.subscriptionStatusHistory.create({ data: { subscriptionId: subscription.id, previousStatus: subscription.status, newStatus: subscription.status || "active", previousPaymentStatus: subscription.lastPaymentStatus, newPaymentStatus: "challenged", source: "stripe_webhook", sourceEventId: event.id } }),
+            ]);
+          }
+          break;
+        }
+
         case "invoice.payment_succeeded": {
           console.log("==================================================");
           console.log("[Stripe Webhook] 🚀 INÍCIO invoice.payment_succeeded");
@@ -504,7 +553,7 @@ export class WebhookController {
           // CRIAR PEDIDO SHOPIFY
           // ----------------------------------------------------------
 
-          if (isRecurring) {
+          if (isRecurring && process.env.ENABLE_LEGACY_SUBSCRIPTION_FLOW === "true") {
             console.log(
               "[Stripe Webhook] 🛒 INICIANDO CRIAÇÃO DO PEDIDO RECORRENTE SHOPIFY"
             );
@@ -602,6 +651,9 @@ export class WebhookController {
             );
           }
 
+          await prisma.subscription.update({ where: { id: subscription.id }, data: { lastPaymentStatus: "succeeded" } });
+          await prisma.subscriptionStatusHistory.create({ data: { subscriptionId: subscription.id, previousStatus: subscription.status, newStatus: subscription.status || "active", previousPaymentStatus: subscription.lastPaymentStatus, newPaymentStatus: "succeeded", source: "stripe_webhook", sourceEventId: event.id } });
+
           console.log(
             "[Stripe Webhook] 🏁 FIM invoice.payment_succeeded"
           );
@@ -664,14 +716,8 @@ export class WebhookController {
             });
           }
 
-          await prisma.subscription.update({
-            where: {
-              id: subscription.id,
-            },
-            data: {
-              status: "past_due",
-            },
-          });
+          await prisma.subscription.update({ where: { id: subscription.id }, data: { lastPaymentStatus: "failed" } });
+          await prisma.subscriptionStatusHistory.create({ data: { subscriptionId: subscription.id, previousStatus: subscription.status, newStatus: subscription.status || "active", previousPaymentStatus: subscription.lastPaymentStatus, newPaymentStatus: "failed", source: "stripe_webhook", sourceEventId: event.id } });
 
           break;
         }
@@ -695,14 +741,10 @@ export class WebhookController {
             });
 
           if (subscription) {
-            await prisma.subscription.update({
-              where: {
-                id: subscription.id,
-              },
-              data: {
-                status: "canceled",
-              },
-            });
+            await prisma.$transaction([
+              prisma.subscription.update({ where: { id: subscription.id }, data: { status: "cancelled" } }),
+              prisma.subscriptionStatusHistory.create({ data: { subscriptionId: subscription.id, previousStatus: subscription.status, newStatus: "cancelled", previousPaymentStatus: subscription.lastPaymentStatus, newPaymentStatus: subscription.lastPaymentStatus, source: "stripe_webhook", sourceEventId: event.id } }),
+            ]);
           }
 
           break;

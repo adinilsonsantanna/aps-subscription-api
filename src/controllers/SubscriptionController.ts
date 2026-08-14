@@ -1,12 +1,29 @@
 import { Request, Response } from "express";
 import { PrismaClient } from "@prisma/client";
 import { GatewayFactory } from "../gateways/gateway.factory";
+import { LifecycleActionName, LifecycleError, SubscriptionLifecycleService } from "../services/SubscriptionLifecycleService";
 
 
 const prisma = new PrismaClient();
 
 
 export class SubscriptionController {
+    private lifecycle = new SubscriptionLifecycleService();
+
+    async lifecycleAction(req: Request, res: Response) {
+        try {
+            const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+            const action = req.path.split("/").filter(Boolean).at(-1) as LifecycleActionName;
+            const key = req.header("Idempotency-Key") || "";
+            const actor = typeof req.body?.actor === "string" ? req.body.actor.toUpperCase() : "CUSTOMER";
+            const result = await this.lifecycle.execute(id, action as LifecycleActionName, key, actor);
+            return res.status(200).json(result);
+        } catch (error) {
+            if (error instanceof LifecycleError) return res.status(error.statusCode).json({ error: { code: error.code, message: error.message } });
+            console.error("[SubscriptionController.lifecycleAction]", error instanceof Error ? error.message : "Unknown error");
+            return res.status(500).json({ error: { code: "internal_error", message: "Internal error" } });
+        }
+    }
     async listByShop(req: Request, res: Response) {
         try {
             const domain = Array.isArray(req.params.domain) ? req.params.domain[0] : req.params.domain;

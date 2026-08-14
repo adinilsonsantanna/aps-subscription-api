@@ -14,7 +14,7 @@
     "migrate:deploy": "prisma migrate deploy",
     "postinstall": "prisma generate",
     "start": "node dist/server.js",
-    "test": "npm run build && node --test dist/src/shopify/events/__tests__/shopify-event.service.test.js"
+    "test": "npm run build && node --test dist/src/**/__tests__/*.test.js"
   },
   "repository": {
     "type": "git",

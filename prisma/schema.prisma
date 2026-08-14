@@ -24,9 +24,9 @@ model Shop {
 }
 
 model Subscription {
-  id                    String                       @id @default(cuid())
+  id                    String                        @id @default(cuid())
   shopId                String
-  shop                  Shop                         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shop                  Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
   orders                SubscriptionOrder[]
   contractLines         SubscriptionLine[]
   shopifyContractId     String?
@@ -50,40 +50,85 @@ model Subscription {
   nextBillingAt         DateTime?
   lastPaymentStatus     String?
   billingAttempts       SubscriptionBillingAttempt[]
-  createdAt             DateTime                     @default(now())
-  updatedAt             DateTime                     @updatedAt
+  lifecycleActions      SubscriptionLifecycleAction[]
+  statusHistory         SubscriptionStatusHistory[]
+  createdAt             DateTime                      @default(now())
+  updatedAt             DateTime                      @updatedAt
 
   @@unique([shopId, shopifyContractId])
   @@index([shopifyContractId])
 }
 
-model SubscriptionOrder {
-  id             String       @id @default(cuid())
+model SubscriptionLifecycleAction {
+  id             String                      @id @default(cuid())
   subscriptionId String
-  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
-  shopifyOrderId String?
-  shopifyOrderKey String?      @unique
-  gatewayOrderId String?
-  amount         Decimal      @db.Decimal(10, 2)
+  subscription   Subscription                @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  idempotencyKey String
+  action         String
+  gateway        String
+  actor          String
   status         String
-  processedAt    DateTime?
-  createdAt      DateTime     @default(now())
+  externalStatus String?
+  errorCode      String?
+  errorMessage   String?
+  createdAt      DateTime                    @default(now())
+  completedAt    DateTime?
+  updatedAt      DateTime                    @updatedAt
+  history        SubscriptionStatusHistory[]
+
+  @@unique([subscriptionId, idempotencyKey])
+  @@index([subscriptionId])
+  @@index([status])
+}
+
+model SubscriptionStatusHistory {
+  id                    String                       @id @default(cuid())
+  subscriptionId        String
+  subscription          Subscription                 @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  previousStatus        String?
+  newStatus             String
+  previousPaymentStatus String?
+  newPaymentStatus      String?
+  source                String
+  sourceEventId         String?
+  lifecycleActionId     String?
+  lifecycleAction       SubscriptionLifecycleAction? @relation(fields: [lifecycleActionId], references: [id], onDelete: SetNull)
+  actor                 String?
+  reason                String?
+  createdAt             DateTime                     @default(now())
+
+  @@unique([source, sourceEventId])
+  @@index([subscriptionId, createdAt])
+  @@index([lifecycleActionId])
+}
+
+model SubscriptionOrder {
+  id              String       @id @default(cuid())
+  subscriptionId  String
+  subscription    Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  shopifyOrderId  String?
+  shopifyOrderKey String?      @unique
+  gatewayOrderId  String?
+  amount          Decimal      @db.Decimal(10, 2)
+  status          String
+  processedAt     DateTime?
+  createdAt       DateTime     @default(now())
 }
 
 model WebhookEvent {
-  id           String    @id @default(cuid())
-  shopId       String? // <-- ALTERADO: tornou-se opcional
-  shop         Shop?     @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  source       String
-  eventId      String    @unique
+  id             String    @id @default(cuid())
+  shopId         String? // <-- ALTERADO: tornou-se opcional
+  shop           Shop?     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  source         String
+  eventId        String    @unique
   shopifyEventId String?
-  topic        String
-  payload      Json
-  processed    Boolean   @default(false)
-  receivedAt   DateTime  @default(now())
-  processedAt  DateTime?
-  errorMessage String?
-  createdAt    DateTime  @default(now())
+  topic          String
+  payload        Json
+  processed      Boolean   @default(false)
+  receivedAt     DateTime  @default(now())
+  processedAt    DateTime?
+  errorMessage   String?
+  createdAt      DateTime  @default(now())
 
   @@index([shopifyEventId])
 }
