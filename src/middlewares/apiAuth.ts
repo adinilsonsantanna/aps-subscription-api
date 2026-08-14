@@ -3,6 +3,17 @@
 // via header X-API-Key
 
 import { Request, Response, NextFunction } from "express";
+import { createHash, timingSafeEqual } from "crypto";
+
+export function secureApiKeyMatches(provided: string | undefined, expected: string | undefined) {
+    if (!provided || !expected) {
+        return false;
+    }
+
+    const providedDigest = createHash("sha256").update(provided).digest();
+    const expectedDigest = createHash("sha256").update(expected).digest();
+    return timingSafeEqual(providedDigest, expectedDigest);
+}
 
 export function apiAuth(req: Request, res: Response, next: NextFunction) {
     const apiKey = req.headers["x-api-key"] as string;
@@ -14,7 +25,7 @@ export function apiAuth(req: Request, res: Response, next: NextFunction) {
         });
     }
 
-    if (apiKey !== process.env.API_KEY) {
+    if (!secureApiKeyMatches(apiKey, process.env.API_KEY)) {
         return res.status(403).json({
             error: "Forbidden",
             message: "API Key inválida",
