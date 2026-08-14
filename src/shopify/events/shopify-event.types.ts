@@ -12,6 +12,8 @@ export type ShopifyEventPayload = Record<string, unknown>;
 
 export interface IncomingShopifyEvent {
   shop: string;
+  shopifyShopId?: string;
+  shopifyEventId?: string;
   topic: ShopifyEventTopic;
   webhookId: string;
   payload: ShopifyEventPayload;
@@ -21,6 +23,7 @@ export interface IncomingShopifyEvent {
 
 export interface NormalizedShopifyContract {
   id: string;
+  revisionId?: string;
   status: string;
   nextBillingAt?: string;
   currencyCode: string;
@@ -71,6 +74,12 @@ function validatedContract(value: unknown): NormalizedShopifyContract {
     return candidate.trim();
   };
   const optionalValue = (candidate: unknown) => typeof candidate === "string" && candidate.trim() ? candidate.trim() : undefined;
+  const gid = (candidate: unknown, resource: string, optional = false) => {
+    const result = optional ? optionalValue(candidate) : requiredString(candidate);
+    if (result === undefined) return undefined;
+    if (!new RegExp(`^gid://shopify/${resource}/[^/]+$`).test(result)) throw new ShopifyEventValidationError("Invalid contract identifier");
+    return result;
+  };
   const policy = (candidate: unknown) => {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) throw new ShopifyEventValidationError("Invalid contract");
     const item = candidate as Record<string, unknown>;
@@ -81,12 +90,12 @@ function validatedContract(value: unknown): NormalizedShopifyContract {
   if (!Array.isArray(contract.lines)) throw new ShopifyEventValidationError("Invalid contract");
   const origin = nested(contract.originOrder), customer = nested(contract.customer);
   return {
-    id: requiredString(contract.id), status: requiredString(contract.status), currencyCode: requiredString(contract.currencyCode),
+    id: gid(contract.id, "SubscriptionContract")!, ...(optionalValue(contract.revisionId) && { revisionId: optionalValue(contract.revisionId) }), status: requiredString(contract.status), currencyCode: requiredString(contract.currencyCode),
     ...(optionalValue(contract.nextBillingAt) && { nextBillingAt: optionalValue(contract.nextBillingAt) }),
     billingPolicy: policy(contract.billingPolicy), deliveryPolicy: policy(contract.deliveryPolicy),
-    ...(origin && { originOrder: { id: requiredString(origin.id), ...(optionalValue(origin.financialStatus) && { financialStatus: optionalValue(origin.financialStatus) }), ...(optionalValue(origin.amount) && { amount: optionalValue(origin.amount) }), ...(optionalValue(origin.currencyCode) && { currencyCode: optionalValue(origin.currencyCode) }), ...(optionalValue(origin.processedAt) && { processedAt: optionalValue(origin.processedAt) }) } }),
-    ...(customer && { customer: { id: requiredString(customer.id), ...(optionalValue(customer.email) && { email: optionalValue(customer.email) }), ...(optionalValue(customer.name) && { name: optionalValue(customer.name) }) } }),
-    lines: contract.lines.map((candidate) => { const line = nested(candidate); if (!line || !Number.isInteger(line.quantity) || Number(line.quantity) < 1) throw new ShopifyEventValidationError("Invalid contract"); const price = nested(line.currentPrice); if (!price) throw new ShopifyEventValidationError("Invalid contract"); return { id: requiredString(line.id), ...(optionalValue(line.title) && { title: optionalValue(line.title) }), ...(optionalValue(line.productId) && { productId: optionalValue(line.productId) }), ...(optionalValue(line.variantId) && { variantId: optionalValue(line.variantId) }), quantity: Number(line.quantity), currentPrice: { amount: requiredString(price.amount), currencyCode: requiredString(price.currencyCode) }, ...(optionalValue(line.sellingPlanId) && { sellingPlanId: optionalValue(line.sellingPlanId) }) }; }),
+    ...(origin && { originOrder: { id: gid(origin.id, "Order")!, ...(optionalValue(origin.financialStatus) && { financialStatus: optionalValue(origin.financialStatus) }), ...(optionalValue(origin.amount) && { amount: optionalValue(origin.amount) }), ...(optionalValue(origin.currencyCode) && { currencyCode: optionalValue(origin.currencyCode) }), ...(optionalValue(origin.processedAt) && { processedAt: optionalValue(origin.processedAt) }) } }),
+    ...(customer && { customer: { id: gid(customer.id, "Customer")!, ...(optionalValue(customer.email) && { email: optionalValue(customer.email) }), ...(optionalValue(customer.name) && { name: optionalValue(customer.name) }) } }),
+    lines: contract.lines.map((candidate) => { const line = nested(candidate); if (!line || !Number.isInteger(line.quantity) || Number(line.quantity) < 1) throw new ShopifyEventValidationError("Invalid contract"); const price = nested(line.currentPrice); if (!price) throw new ShopifyEventValidationError("Invalid contract"); return { id: gid(line.id, "SubscriptionLine")!, ...(optionalValue(line.title) && { title: optionalValue(line.title) }), ...(gid(line.productId, "Product", true) && { productId: gid(line.productId, "Product", true) }), ...(gid(line.variantId, "ProductVariant", true) && { variantId: gid(line.variantId, "ProductVariant", true) }), quantity: Number(line.quantity), currentPrice: { amount: requiredString(price.amount), currencyCode: requiredString(price.currencyCode) }, ...(gid(line.sellingPlanId, "SellingPlan", true) && { sellingPlanId: gid(line.sellingPlanId, "SellingPlan", true) }) }; }),
   };
 }
 
@@ -98,6 +107,8 @@ export function validateIncomingShopifyEvent(value: unknown): IncomingShopifyEve
   const body = value as Record<string, unknown>;
   const shop = typeof body.shop === "string" ? body.shop.trim().toLowerCase() : "";
   const webhookId = typeof body.webhookId === "string" ? body.webhookId.trim() : "";
+  const shopifyShopId = typeof body.shopifyShopId === "string" ? body.shopifyShopId.trim() : undefined;
+  const shopifyEventId = typeof body.shopifyEventId === "string" ? body.shopifyEventId.trim() : undefined;
 
   if (!/^[a-z0-9][a-z0-9.-]{1,251}[a-z0-9]$/.test(shop)) {
     throw new ShopifyEventValidationError("Invalid shop");
@@ -108,6 +119,8 @@ export function validateIncomingShopifyEvent(value: unknown): IncomingShopifyEve
   if (!webhookId || webhookId.length > 255) {
     throw new ShopifyEventValidationError("Invalid webhookId");
   }
+  if (shopifyShopId && !/^gid:\/\/shopify\/Shop\/[^/]+$/.test(shopifyShopId)) throw new ShopifyEventValidationError("Invalid shopifyShopId");
+  if (shopifyEventId && shopifyEventId.length > 255) throw new ShopifyEventValidationError("Invalid shopifyEventId");
   if (!body.payload || typeof body.payload !== "object" || Array.isArray(body.payload)) {
     throw new ShopifyEventValidationError("Invalid payload");
   }
@@ -119,6 +132,8 @@ export function validateIncomingShopifyEvent(value: unknown): IncomingShopifyEve
 
   return {
     shop,
+    ...(shopifyShopId && { shopifyShopId }),
+    ...(shopifyEventId && { shopifyEventId }),
     topic: body.topic,
     webhookId,
     payload: sanitizePayloadValue(body.payload) as ShopifyEventPayload,

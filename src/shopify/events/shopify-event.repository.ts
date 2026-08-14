@@ -59,6 +59,7 @@ export function contractUpdatePatch(contract: NormalizedShopifyContract) {
   const firstLine = contract.lines[0];
   return {
     shopifyOriginOrderId: contract.originOrder?.id,
+    shopifyRevisionId: contract.revisionId,
     shopifyCustomerId: contract.customer?.id,
     shopifyProductId: firstLine?.productId,
     shopifyVariantId: firstLine?.variantId,
@@ -136,6 +137,7 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
         source: "shopify",
         topic: event.topic,
         eventId: event.webhookId,
+        shopifyEventId: event.shopifyEventId,
         payload: event.payload as Prisma.InputJsonObject,
         receivedAt: event.receivedAt,
       },
@@ -144,6 +146,9 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
 
   async processEvent(event: IncomingShopifyEvent, shopId: string) {
     await this.prisma.$transaction(async (transaction) => {
+      if (event.shopifyShopId) {
+        await transaction.shop.update({ where: { id: shopId }, data: { shopifyShopId: event.shopifyShopId } });
+      }
       switch (event.topic) {
         case "subscription_contracts/create":
           await this.upsertContract(transaction, event.contract!, shopId);
@@ -172,7 +177,7 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
 
       await transaction.webhookEvent.update({
         where: { eventId: event.webhookId },
-        data: { processed: true, processedAt: new Date(), errorMessage: null },
+        data: { processed: true, processedAt: new Date(), errorMessage: null, ...(event.shopifyEventId && { shopifyEventId: event.shopifyEventId }) },
       });
     });
   }
@@ -202,6 +207,7 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
     if (subscription.gateway === null) {
       await transaction.subscription.update({ where: { id: subscription.id }, data: { gateway: "shopify" } });
     }
+    await this.syncContractLines(transaction, subscription.id, contract);
     if (contract.originOrder?.amount && contract.originOrder.financialStatus) {
       const paid = contract.originOrder.financialStatus.toUpperCase() === "PAID";
       await transaction.subscriptionOrder.upsert({
@@ -234,6 +240,39 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
     });
     if (subscription.gateway === null) {
       await transaction.subscription.update({ where: { id: subscription.id }, data: { gateway: "shopify" } });
+    }
+    await this.syncContractLines(transaction, subscription.id, contract);
+  }
+
+  private async syncContractLines(
+    transaction: Prisma.TransactionClient,
+    subscriptionId: string,
+    contract: NormalizedShopifyContract,
+  ) {
+    const activeIds = contract.lines.map((line) => line.id);
+    await transaction.subscriptionLine.updateMany({
+      where: {
+        subscriptionId,
+        isActive: true,
+        ...(activeIds.length ? { shopifySubscriptionLineId: { notIn: activeIds } } : {}),
+      },
+      data: { isActive: false },
+    });
+    for (const line of contract.lines) {
+      const data = {
+        shopifyProductId: line.productId,
+        shopifyVariantId: line.variantId,
+        shopifySellingPlanId: line.sellingPlanId,
+        quantity: line.quantity,
+        currentPrice: line.currentPrice.amount,
+        currencyCode: line.currentPrice.currencyCode,
+        isActive: true,
+      };
+      await transaction.subscriptionLine.upsert({
+        where: { subscriptionId_shopifySubscriptionLineId: { subscriptionId, shopifySubscriptionLineId: line.id } },
+        create: { subscriptionId, shopifySubscriptionLineId: line.id, ...data },
+        update: data,
+      });
     }
   }
 
