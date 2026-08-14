@@ -1,6 +1,7 @@
 import { Prisma, PrismaClient } from "@prisma/client";
 import {
   IncomingShopifyEvent,
+  NormalizedShopifyContract,
   ShopifyEventPayload,
   ShopifyEventTopic,
   contractIdFromPayload,
@@ -52,6 +53,36 @@ export function contractPatchFromPayload(payload: ShopifyEventPayload) {
     intervalType: optionalString(billingPolicy, "interval"),
     nextBillingAt: optionalDate(payload, "next_billing_at", "next_billing_date"),
   } satisfies Prisma.SubscriptionUncheckedUpdateInput;
+}
+
+export function contractUpdatePatch(contract: NormalizedShopifyContract) {
+  const firstLine = contract.lines[0];
+  return {
+    shopifyOriginOrderId: contract.originOrder?.id,
+    shopifyCustomerId: contract.customer?.id,
+    shopifyProductId: firstLine?.productId,
+    shopifyVariantId: firstLine?.variantId,
+    status: contract.status.toLowerCase(),
+    currencyCode: contract.currencyCode,
+    billingInterval: contract.billingPolicy.interval.toLowerCase(),
+    billingIntervalCount: contract.billingPolicy.intervalCount,
+    deliveryInterval: contract.deliveryPolicy.interval.toLowerCase(),
+    deliveryIntervalCount: contract.deliveryPolicy.intervalCount,
+    interval: contract.billingPolicy.intervalCount,
+    intervalType: contract.billingPolicy.interval.toLowerCase(),
+    nextBillingAt: contract.nextBillingAt ? new Date(contract.nextBillingAt) : undefined,
+    lastPaymentStatus: contract.originOrder?.financialStatus?.toUpperCase(),
+  } satisfies Prisma.SubscriptionUncheckedUpdateInput;
+}
+
+export function newShopifySubscriptionData(contract: NormalizedShopifyContract) {
+  return {
+    ...contractUpdatePatch(contract),
+    gateway: "shopify",
+    externalId: null,
+    stripeCustomerId: null,
+    stripePaymentMethodId: null,
+  } satisfies Omit<Prisma.SubscriptionUncheckedCreateInput, "shopId">;
 }
 
 export function billingAttemptDataFromPayload(
@@ -115,10 +146,10 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
     await this.prisma.$transaction(async (transaction) => {
       switch (event.topic) {
         case "subscription_contracts/create":
-          await this.upsertContract(transaction, event.payload, shopId);
+          await this.upsertContract(transaction, event.contract!, shopId);
           break;
         case "subscription_contracts/update":
-          await this.updateContract(transaction, event.payload, shopId);
+          await this.updateContract(transaction, event.contract!, shopId);
           break;
         case "subscription_billing_attempts/success":
         case "subscription_billing_attempts/failure":
@@ -155,34 +186,55 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
 
   private async upsertContract(
     transaction: Prisma.TransactionClient,
-    payload: ShopifyEventPayload,
+    contract: NormalizedShopifyContract,
     shopId: string,
   ) {
-    const shopifyContractId = contractIdForContractWebhook(payload);
-    if (!shopifyContractId) throw new Error("Contract identifier is unavailable");
-    const patch = contractPatchFromPayload(payload);
+    const shopifyContractId = contract.id;
+    const createData = newShopifySubscriptionData(contract);
+    const patch = contractUpdatePatch(contract);
 
-    await transaction.subscription.upsert({
+    const subscription = await transaction.subscription.upsert({
       where: { shopId_shopifyContractId: { shopId, shopifyContractId } },
-      create: { shopId, shopifyContractId, ...patch },
+      create: { shopId, shopifyContractId, ...createData },
       update: patch,
+      select: { id: true, gateway: true },
     });
+    if (subscription.gateway === null) {
+      await transaction.subscription.update({ where: { id: subscription.id }, data: { gateway: "shopify" } });
+    }
+    if (contract.originOrder?.amount && contract.originOrder.financialStatus) {
+      const paid = contract.originOrder.financialStatus.toUpperCase() === "PAID";
+      await transaction.subscriptionOrder.upsert({
+        where: { shopifyOrderKey: `${shopId}:${contract.originOrder.id}` },
+        create: {
+          subscriptionId: subscription.id,
+          shopifyOrderId: contract.originOrder.id,
+          shopifyOrderKey: `${shopId}:${contract.originOrder.id}`,
+          amount: contract.originOrder.amount,
+          status: contract.originOrder.financialStatus.toUpperCase(),
+          processedAt: paid ? new Date(contract.originOrder.processedAt ?? new Date()) : null,
+        },
+        update: {},
+      });
+    }
   }
 
   private async updateContract(
     transaction: Prisma.TransactionClient,
-    payload: ShopifyEventPayload,
+    contract: NormalizedShopifyContract,
     shopId: string,
   ) {
-    const shopifyContractId = contractIdForContractWebhook(payload);
-    if (!shopifyContractId) throw new Error("Contract identifier is unavailable");
-
-    const patch = contractPatchFromPayload(payload);
-    await transaction.subscription.upsert({
+    const shopifyContractId = contract.id;
+    const patch = Object.fromEntries(Object.entries(contractUpdatePatch(contract)).filter(([, value]) => value !== undefined));
+    const subscription = await transaction.subscription.upsert({
       where: { shopId_shopifyContractId: { shopId, shopifyContractId } },
-      create: { shopId, shopifyContractId, ...patch },
+      create: { shopId, shopifyContractId, ...newShopifySubscriptionData(contract) },
       update: patch,
+      select: { id: true, gateway: true },
     });
+    if (subscription.gateway === null) {
+      await transaction.subscription.update({ where: { id: subscription.id }, data: { gateway: "shopify" } });
+    }
   }
 
   private async recordBillingAttempt(
