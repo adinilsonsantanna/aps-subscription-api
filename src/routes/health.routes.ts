@@ -28,11 +28,6 @@ router.get("/", (_, res) => {
             },
             shopify: shopifyConfigured ? "configured" : "missing",
         },
-        keysPreview: {
-            stripeSecretKey: process.env.STRIPE_SECRET_KEY ? `${process.env.STRIPE_SECRET_KEY.substring(0, 10)}...` : null,
-            stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET ? `${process.env.STRIPE_WEBHOOK_SECRET.substring(0, 10)}...` : null,
-            stripePublishableKey: process.env.STRIPE_PUBLISHABLE_KEY ? `${process.env.STRIPE_PUBLISHABLE_KEY.substring(0, 10)}...` : null,
-        },
     });
 });
 

@@ -1,5 +1,9 @@
 # Environment
 .env
+.env.*
+!.env.example
+env.txt
+*.env
 .env.txt
 .env.local
 
@@ -26,3 +30,4 @@ prisma/dev.db
 
 .vercel
 .env*
+!.env.example
