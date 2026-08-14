@@ -5,11 +5,13 @@ import {
   ShopifyEventRepository,
   billingAttemptDataFromPayload,
   contractPatchFromPayload,
-  contractPatch,
+  contractUpdatePatch,
+  newShopifySubscriptionData,
 } from "../shopify-event.repository";
 import { ShopifyEventIngestionService } from "../shopify-event.service";
 import {
   IncomingShopifyEvent,
+  NormalizedShopifyContract,
   ShopifyEventPayload,
   ShopifyShopNotFoundError,
   contractIdFromPayload,
@@ -328,20 +330,44 @@ test("marks a shop inactive without deleting its mirrored data", async () => {
   assert.equal(repository.contracts.get(contractId)?.status, "active");
 });
 
-test("maps an enriched contract to the Shopify gateway without Stripe identifiers", () => {
-  const patch = contractPatch({
+const enrichedContract: NormalizedShopifyContract = {
     id: contractId, status: "ACTIVE", nextBillingAt: "2026-09-14T12:00:00.000Z", currencyCode: "BRL",
     originOrder: { id: "gid://shopify/Order/1", financialStatus: "PAID", amount: "99.90", processedAt: "2026-08-14T12:00:00.000Z" },
     customer: { id: "gid://shopify/Customer/1" }, billingPolicy: { interval: "MONTH", intervalCount: 1 },
     deliveryPolicy: { interval: "WEEK", intervalCount: 2 },
     lines: [{ id: "gid://shopify/SubscriptionLine/1", productId: "gid://shopify/Product/1", variantId: "gid://shopify/ProductVariant/1", quantity: 1, currentPrice: { amount: "99.90", currencyCode: "BRL" } }],
-  });
-  assert.equal(patch.gateway, "shopify");
-  assert.equal(patch.externalId, null);
-  assert.equal(patch.stripeCustomerId, null);
-  assert.equal(patch.stripePaymentMethodId, null);
+  };
+
+test("creates a new Shopify subscription with null Stripe identifiers", () => {
+  const data = newShopifySubscriptionData(enrichedContract);
+  assert.equal(data.gateway, "shopify");
+  assert.equal(data.externalId, null);
+  assert.equal(data.stripeCustomerId, null);
+  assert.equal(data.stripePaymentMethodId, null);
+});
+
+test("contract updates never contain Stripe identifiers or gateway", () => {
+  const patch = contractUpdatePatch(enrichedContract);
+  assert.equal("externalId" in patch, false);
+  assert.equal("stripeCustomerId" in patch, false);
+  assert.equal("stripePaymentMethodId" in patch, false);
+  assert.equal("gateway" in patch, false);
   assert.equal(patch.shopifyOriginOrderId, "gid://shopify/Order/1");
-  assert.equal(patch.deliveryIntervalCount, 2);
+});
+
+test("redelivered create preserves historical Stripe fields and gateway", () => {
+  const historical = { gateway: "stripe", externalId: "sub_old", stripeCustomerId: "cus_old", stripePaymentMethodId: "pm_old" };
+  const result = { ...historical, ...contractUpdatePatch(enrichedContract) };
+  assert.deepEqual({ gateway: result.gateway, externalId: result.externalId, stripeCustomerId: result.stripeCustomerId, stripePaymentMethodId: result.stripePaymentMethodId }, historical);
+});
+
+test("partial updates preserve existing data and a null gateway can become Shopify", () => {
+  const existing = { gateway: null as string | null, externalId: "legacy", currencyCode: "BRL" };
+  const partial = Object.fromEntries(Object.entries(contractUpdatePatch({ ...enrichedContract, customer: undefined, lines: [] })).filter(([, value]) => value !== undefined));
+  const result = { ...existing, ...partial, gateway: existing.gateway ?? "shopify" };
+  assert.equal(result.gateway, "shopify");
+  assert.equal(result.externalId, "legacy");
+  assert.equal(result.currencyCode, "BRL");
 });
 
 test("accepts optional enriched contract fields being absent", async () => {

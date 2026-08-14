@@ -28,7 +28,6 @@ export interface NormalizedShopifyContract {
   customer?: { id: string; email?: string; name?: string };
   billingPolicy: { interval: string; intervalCount: number };
   deliveryPolicy: { interval: string; intervalCount: number };
-  paymentMethodId?: string;
   lines: Array<{ id: string; title?: string; productId?: string; variantId?: string; quantity: number; currentPrice: { amount: string; currencyCode: string }; sellingPlanId?: string }>;
 }
 
@@ -87,7 +86,6 @@ function validatedContract(value: unknown): NormalizedShopifyContract {
     billingPolicy: policy(contract.billingPolicy), deliveryPolicy: policy(contract.deliveryPolicy),
     ...(origin && { originOrder: { id: requiredString(origin.id), ...(optionalValue(origin.financialStatus) && { financialStatus: optionalValue(origin.financialStatus) }), ...(optionalValue(origin.amount) && { amount: optionalValue(origin.amount) }), ...(optionalValue(origin.currencyCode) && { currencyCode: optionalValue(origin.currencyCode) }), ...(optionalValue(origin.processedAt) && { processedAt: optionalValue(origin.processedAt) }) } }),
     ...(customer && { customer: { id: requiredString(customer.id), ...(optionalValue(customer.email) && { email: optionalValue(customer.email) }), ...(optionalValue(customer.name) && { name: optionalValue(customer.name) }) } }),
-    ...(optionalValue(contract.paymentMethodId) && { paymentMethodId: optionalValue(contract.paymentMethodId) }),
     lines: contract.lines.map((candidate) => { const line = nested(candidate); if (!line || !Number.isInteger(line.quantity) || Number(line.quantity) < 1) throw new ShopifyEventValidationError("Invalid contract"); const price = nested(line.currentPrice); if (!price) throw new ShopifyEventValidationError("Invalid contract"); return { id: requiredString(line.id), ...(optionalValue(line.title) && { title: optionalValue(line.title) }), ...(optionalValue(line.productId) && { productId: optionalValue(line.productId) }), ...(optionalValue(line.variantId) && { variantId: optionalValue(line.variantId) }), quantity: Number(line.quantity), currentPrice: { amount: requiredString(price.amount), currencyCode: requiredString(price.currencyCode) }, ...(optionalValue(line.sellingPlanId) && { sellingPlanId: optionalValue(line.sellingPlanId) }) }; }),
   };
 }
