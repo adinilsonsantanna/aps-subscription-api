@@ -5,6 +5,7 @@ import {
   ShopifyEventRepository,
   billingAttemptDataFromPayload,
   contractPatchFromPayload,
+  contractPatch,
 } from "../shopify-event.repository";
 import { ShopifyEventIngestionService } from "../shopify-event.service";
 import {
@@ -83,11 +84,23 @@ class MemoryRepository implements ShopifyEventRepository {
 }
 
 function body(topic: string, webhookId: string, payload: ShopifyEventPayload = {}) {
+  const id = optionalString(payload, "admin_graphql_api_id") ?? contractId;
   return {
     shop: "known.myshopify.com",
     topic,
     webhookId,
     payload,
+    ...(topic.startsWith("subscription_contracts/") ? { contract: {
+      id,
+      status: optionalString(payload, "status") ?? "ACTIVE",
+      currencyCode: optionalString(payload, "currency_code") ?? "BRL",
+      billingPolicy: {
+        interval: optionalString((payload.billing_policy as ShopifyEventPayload | undefined) ?? {}, "interval") ?? "MONTH",
+        intervalCount: Number((payload.billing_policy as ShopifyEventPayload | undefined)?.interval_count ?? 1),
+      },
+      deliveryPolicy: { interval: "MONTH", intervalCount: 1 },
+      lines: [],
+    } } : {}),
     receivedAt: "2026-08-14T12:00:00.000Z",
   };
 }
@@ -313,4 +326,27 @@ test("marks a shop inactive without deleting its mirrored data", async () => {
   assert.equal(repository.shops.get("known.myshopify.com")?.isActive, false);
   assert.equal(repository.events.get("webhook-10")?.processed, true);
   assert.equal(repository.contracts.get(contractId)?.status, "active");
+});
+
+test("maps an enriched contract to the Shopify gateway without Stripe identifiers", () => {
+  const patch = contractPatch({
+    id: contractId, status: "ACTIVE", nextBillingAt: "2026-09-14T12:00:00.000Z", currencyCode: "BRL",
+    originOrder: { id: "gid://shopify/Order/1", financialStatus: "PAID", amount: "99.90", processedAt: "2026-08-14T12:00:00.000Z" },
+    customer: { id: "gid://shopify/Customer/1" }, billingPolicy: { interval: "MONTH", intervalCount: 1 },
+    deliveryPolicy: { interval: "WEEK", intervalCount: 2 },
+    lines: [{ id: "gid://shopify/SubscriptionLine/1", productId: "gid://shopify/Product/1", variantId: "gid://shopify/ProductVariant/1", quantity: 1, currentPrice: { amount: "99.90", currencyCode: "BRL" } }],
+  });
+  assert.equal(patch.gateway, "shopify");
+  assert.equal(patch.externalId, null);
+  assert.equal(patch.stripeCustomerId, null);
+  assert.equal(patch.stripePaymentMethodId, null);
+  assert.equal(patch.shopifyOriginOrderId, "gid://shopify/Order/1");
+  assert.equal(patch.deliveryIntervalCount, 2);
+});
+
+test("accepts optional enriched contract fields being absent", async () => {
+  const event = body("subscription_contracts/create", "minimal-enriched", { admin_graphql_api_id: contractId });
+  const repository = new MemoryRepository();
+  await new ShopifyEventIngestionService(repository).ingest(event);
+  assert.equal(repository.events.get("minimal-enriched")?.processed, true);
 });

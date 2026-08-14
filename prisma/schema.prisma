@@ -60,6 +60,7 @@ model SubscriptionOrder {
   subscriptionId String
   subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
   shopifyOrderId String?
+  shopifyOrderKey String?      @unique
   gatewayOrderId String?
   amount         Decimal      @db.Decimal(10, 2)
   status         String
