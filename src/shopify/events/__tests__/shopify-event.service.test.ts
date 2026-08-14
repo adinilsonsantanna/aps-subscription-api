@@ -191,6 +191,24 @@ test("keeps a billing attempt that arrives before contract creation", async () =
   assert.equal(repository.attempts[0]?.status, "SUCCEEDED");
 });
 
+test("does not duplicate a billing attempt when a failed webhook is retried", async () => {
+  const repository = new MemoryRepository();
+  repository.failNextProcessing = true;
+  const service = new ShopifyEventIngestionService(repository);
+  const event = body("subscription_billing_attempts/success", "webhook-attempt-retry", {
+    admin_graphql_api_subscription_contract_id: contractId,
+    admin_graphql_api_id: "gid://shopify/SubscriptionBillingAttempt/retry",
+  });
+
+  await assert.rejects(service.ingest(event), /transient failure/);
+  await service.ingest(event);
+  await service.ingest(event);
+
+  assert.equal(repository.attempts.length, 1);
+  assert.equal(repository.attempts[0]?.webhookEventId, "webhook-attempt-retry");
+  assert.equal(repository.processCount, 2);
+});
+
 test("records a successful billing attempt and its Shopify order", async () => {
   const repository = new MemoryRepository();
   const service = new ShopifyEventIngestionService(repository);
@@ -286,8 +304,13 @@ test("records a challenged billing attempt without cancelling the contract", asy
 test("marks a shop inactive without deleting its mirrored data", async () => {
   const repository = new MemoryRepository();
   const service = new ShopifyEventIngestionService(repository);
+  await service.ingest(body("subscription_contracts/create", "webhook-before-uninstall", {
+    admin_graphql_api_id: contractId,
+    status: "active",
+  }));
   await service.ingest(body("app/uninstalled", "webhook-10"));
 
   assert.equal(repository.shops.get("known.myshopify.com")?.isActive, false);
   assert.equal(repository.events.get("webhook-10")?.processed, true);
+  assert.equal(repository.contracts.get(contractId)?.status, "active");
 });
