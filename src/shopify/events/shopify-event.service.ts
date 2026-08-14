@@ -15,10 +15,10 @@ export class ShopifyEventIngestionService {
 
   async ingest(body: unknown): Promise<ShopifyEventIngestionResult> {
     const event = validateIncomingShopifyEvent(body);
-    const existingEvent = await this.repository.findEventById(event.webhookId);
+    let existingEvent = await this.repository.findEventById(event.webhookId);
 
-    if (existingEvent) {
-      return { duplicate: true, processed: existingEvent.processed };
+    if (existingEvent?.processed) {
+      return { duplicate: true, processed: true };
     }
 
     const shop = await this.repository.findShopByDomain(event.shop);
@@ -26,18 +26,26 @@ export class ShopifyEventIngestionService {
       throw new ShopifyShopNotFoundError("Shop not found");
     }
 
-    try {
-      await this.repository.createEvent(event, shop.id);
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-        return { duplicate: true, processed: false };
+    let duplicate = Boolean(existingEvent);
+    if (!existingEvent) {
+      try {
+        await this.repository.createEvent(event, shop.id);
+      } catch (error) {
+        if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
+          throw error;
+        }
+
+        duplicate = true;
+        existingEvent = await this.repository.findEventById(event.webhookId);
+        if (existingEvent?.processed) {
+          return { duplicate: true, processed: true };
+        }
       }
-      throw error;
     }
 
     try {
       await this.repository.processEvent(event, shop.id);
-      return { duplicate: false, processed: true };
+      return { duplicate, processed: true };
     } catch (error) {
       await this.repository.markEventFailed(
         event.webhookId,

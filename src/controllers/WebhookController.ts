@@ -83,17 +83,11 @@ export class WebhookController {
 
       switch (topic) {
         case "subscription_contracts/create":
-          await this.handleSubscriptionContractCreate(
-            payload,
-            shopRecord.id
-          );
+          await this.handleSubscriptionContractCreate(payload);
           break;
 
         case "subscription_contracts/update":
-          await this.handleSubscriptionContractUpdate(
-            payload,
-            shopRecord.id
-          );
+          await this.handleSubscriptionContractUpdate(payload);
           break;
 
         case "orders/create":
@@ -581,27 +575,32 @@ export class WebhookController {
           // PRÓXIMA COBRANÇA
           // ----------------------------------------------------------
 
-          const nextBillingDate =
-            this.calculateNextBillingDate(
-              new Date(),
-              subscription.interval,
-              subscription.intervalType
+          if (
+            subscription.interval !== null &&
+            subscription.intervalType !== null
+          ) {
+            const nextBillingDate =
+              this.calculateNextBillingDate(
+                new Date(),
+                subscription.interval,
+                subscription.intervalType
+              );
+
+            await prisma.subscription.update({
+              where: {
+                id: subscription.id,
+              },
+              data: {
+                nextBillingAt:
+                  nextBillingDate,
+              },
+            });
+
+            console.log(
+              "[Stripe Webhook] ✅ Próxima cobrança atualizada:",
+              nextBillingDate
             );
-
-          await prisma.subscription.update({
-            where: {
-              id: subscription.id,
-            },
-            data: {
-              nextBillingAt:
-                nextBillingDate,
-            },
-          });
-
-          console.log(
-            "[Stripe Webhook] ✅ Próxima cobrança atualizada:",
-            nextBillingDate
-          );
+          }
 
           console.log(
             "[Stripe Webhook] 🏁 FIM invoice.payment_succeeded"
@@ -762,281 +761,21 @@ export class WebhookController {
   // ============================================================
 
   private async handleSubscriptionContractCreate(
-    payload: any,
-    shopId: string
+    payload: any
   ) {
-    try {
-      console.log(
-        "[Shopify Webhook] Novo contrato:",
-        payload
-      );
-
-      const contractId =
-        String(
-          payload?.admin_graphql_api_id ||
-          payload?.id ||
-          ""
-        );
-
-      const customerId =
-        String(
-          payload?.customer_id ||
-          payload?.customer?.id ||
-          ""
-        );
-
-      const status =
-        String(
-          payload?.status || "active"
-        ).toLowerCase();
-
-      const nextBillingAt =
-        payload?.next_billing_date
-          ? new Date(
-              payload.next_billing_date
-            )
-          : new Date();
-
-      const billingPolicy =
-        payload?.billing_policy || {};
-
-      const interval =
-        Number(
-          billingPolicy?.interval_count || 1
-        );
-
-      const intervalType =
-        String(
-          billingPolicy?.interval || "month"
-        ).toLowerCase();
-
-      const lines =
-        payload?.lines || [];
-
-      const firstLine =
-        Array.isArray(lines)
-          ? lines[0]
-          : undefined;
-
-      const productId =
-        String(
-          firstLine?.product_id ||
-          firstLine?.product?.id ||
-          ""
-        );
-
-      const variantId =
-        String(
-          firstLine?.variant_id ||
-          firstLine?.product_variant_id ||
-          firstLine?.variant?.id ||
-          ""
-        );
-
-      if (!contractId) {
-        console.warn(
-          "[Shopify Webhook] Contrato sem ID. Ignorando."
-        );
-
-        return;
-      }
-
-      const existing =
-        await prisma.subscription.findFirst({
-          where: {
-            shopId,
-            externalId: contractId,
-          },
-        });
-
-      if (existing) {
-        await prisma.subscription.update({
-          where: {
-            id: existing.id,
-          },
-          data: {
-            shopifyCustomerId:
-              customerId ||
-              existing.shopifyCustomerId,
-
-            shopifyProductId:
-              productId ||
-              existing.shopifyProductId,
-
-            shopifyVariantId:
-              variantId ||
-              existing.shopifyVariantId,
-
-            status,
-
-            interval,
-
-            intervalType,
-
-            nextBillingAt,
-          },
-        });
-
-        console.log(
-          "[Shopify Webhook] ✅ Subscription atualizada:",
-          existing.id
-        );
-
-        return;
-      }
-
-      if (
-        !customerId ||
-        !productId ||
-        !variantId
-      ) {
-        console.warn(
-          "[Shopify Webhook] Dados insuficientes para criar Subscription:",
-          {
-            contractId,
-            customerId,
-            productId,
-            variantId,
-          }
-        );
-
-        return;
-      }
-
-      const subscription =
-        await prisma.subscription.create({
-          data: {
-            shopId,
-
-            shopifyCustomerId:
-              customerId,
-
-            shopifyProductId:
-              productId,
-
-            shopifyVariantId:
-              variantId,
-
-            gateway:
-              "shopify",
-
-            externalId:
-              contractId,
-
-            status,
-
-            interval,
-
-            intervalType,
-
-            nextBillingAt,
-          },
-        });
-
-      console.log(
-        "[Shopify Webhook] ✅ Subscription criada:",
-        subscription.id
-      );
-
-      console.log(
-        "[Shopify Webhook] Shopify Contract:",
-        contractId
-      );
-    } catch (error) {
-      console.error(
-        "[Shopify Webhook] Erro ao criar assinatura pelo contrato:",
-        error
-      );
-
-      throw error;
-    }
+    console.log(
+      "[Shopify Webhook] Novo contrato:",
+      payload
+    );
   }
 
   private async handleSubscriptionContractUpdate(
-    payload: any,
-    shopId: string
+    payload: any
   ) {
-    try {
-      console.log(
-        "[Shopify Webhook] Contrato atualizado:",
-        payload
-      );
-
-      const contractId =
-        String(
-          payload?.admin_graphql_api_id ||
-          payload?.id ||
-          ""
-        );
-
-      if (!contractId) {
-        return;
-      }
-
-      const subscription =
-        await prisma.subscription.findFirst({
-          where: {
-            shopId,
-            externalId: contractId,
-          },
-        });
-
-      if (!subscription) {
-        console.warn(
-          "[Shopify Webhook] Subscription não encontrada para contrato:",
-          contractId
-        );
-
-        return;
-      }
-
-      const billingPolicy =
-        payload?.billing_policy || {};
-
-      await prisma.subscription.update({
-        where: {
-          id: subscription.id,
-        },
-        data: {
-          status:
-            String(
-              payload?.status ||
-              subscription.status
-            ).toLowerCase(),
-
-          interval:
-            Number(
-              billingPolicy?.interval_count ||
-              subscription.interval
-            ),
-
-          intervalType:
-            String(
-              billingPolicy?.interval ||
-              subscription.intervalType
-            ).toLowerCase(),
-
-          nextBillingAt:
-            payload?.next_billing_date
-              ? new Date(
-                  payload.next_billing_date
-                )
-              : subscription.nextBillingAt,
-        },
-      });
-
-      console.log(
-        "[Shopify Webhook] ✅ Subscription sincronizada:",
-        subscription.id
-      );
-    } catch (error) {
-      console.error(
-        "[Shopify Webhook] Erro ao atualizar contrato:",
-        error
-      );
-
-      throw error;
-    }
+    console.log(
+      "[Shopify Webhook] Contrato atualizado:",
+      payload
+    );
   }
 
   // ============================================================

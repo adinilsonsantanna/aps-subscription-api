@@ -43,8 +43,8 @@ model Subscription {
   billingIntervalCount  Int?
   deliveryInterval      String?
   deliveryIntervalCount Int?
-  interval              Int
-  intervalType          String
+  interval              Int?
+  intervalType          String?
   nextBillingAt         DateTime?
   lastPaymentStatus     String?
   billingAttempts       SubscriptionBillingAttempt[]
@@ -91,6 +91,7 @@ model SubscriptionBillingAttempt {
   shopifyContractId       String
   shopifyBillingAttemptId String?
   idempotencyKey          String?
+  webhookEventId          String?      @unique
   status                  String
   errorCode               String?
   errorMessage            String?

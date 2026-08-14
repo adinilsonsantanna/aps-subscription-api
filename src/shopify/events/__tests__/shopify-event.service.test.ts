@@ -17,10 +17,11 @@ import {
 
 class MemoryRepository implements ShopifyEventRepository {
   shops = new Map([["known.myshopify.com", { id: "shop-1", isActive: true }]]);
-  events = new Map<string, { processed: boolean; errorMessage?: string }>();
+  events = new Map<string, { processed: boolean; processedAt?: Date; errorMessage?: string }>();
   contracts = new Map<string, Partial<ReturnType<typeof contractPatchFromPayload>>>();
-  attempts: ReturnType<typeof billingAttemptDataFromPayload>[] = [];
+  attempts: Array<ReturnType<typeof billingAttemptDataFromPayload> & { webhookEventId: string }> = [];
   processCount = 0;
+  failNextProcessing = false;
 
   async findShopByDomain(domain: string) {
     return this.shops.get(domain) ?? null;
@@ -36,13 +37,18 @@ class MemoryRepository implements ShopifyEventRepository {
 
   async processEvent(event: IncomingShopifyEvent) {
     this.processCount += 1;
+    if (this.failNextProcessing) {
+      this.failNextProcessing = false;
+      throw new Error("transient failure");
+    }
+
     if (event.topic === "subscription_contracts/create") {
       const id = optionalString(event.payload, "admin_graphql_api_id");
       if (!id) throw new Error("missing contract");
       this.contracts.set(id, contractPatchFromPayload(event.payload));
     } else if (event.topic === "subscription_contracts/update") {
       const id = optionalString(event.payload, "admin_graphql_api_id");
-      if (!id || !this.contracts.has(id)) throw new Error("missing contract");
+      if (!id) throw new Error("missing contract");
       const current = this.contracts.get(id) ?? {};
       const patch = Object.fromEntries(
         Object.entries(contractPatchFromPayload(event.payload)).filter(([, value]) => value !== undefined),
@@ -54,12 +60,21 @@ class MemoryRepository implements ShopifyEventRepository {
       event.topic === "subscription_billing_attempts/challenged"
     ) {
       const contractId = contractIdFromPayload(event.payload);
-      if (!contractId || !this.contracts.has(contractId)) throw new Error("missing contract");
-      this.attempts.push(billingAttemptDataFromPayload(event.topic, event.payload));
+      if (!contractId) throw new Error("missing contract");
+      if (!this.contracts.has(contractId)) this.contracts.set(contractId, {});
+      const attempt = {
+        ...billingAttemptDataFromPayload(event.topic, event.payload),
+        webhookEventId: event.webhookId,
+      };
+      const existingAttempt = this.attempts.findIndex(
+        (candidate) => candidate.webhookEventId === event.webhookId,
+      );
+      if (existingAttempt >= 0) this.attempts[existingAttempt] = attempt;
+      else this.attempts.push(attempt);
     } else if (event.topic === "app/uninstalled") {
       this.shops.set(event.shop, { id: "shop-1", isActive: false });
     }
-    this.events.set(event.webhookId, { processed: true });
+    this.events.set(event.webhookId, { processed: true, processedAt: new Date() });
   }
 
   async markEventFailed(eventId: string, errorMessage: string) {
@@ -94,6 +109,27 @@ test("returns success without processing a duplicate event twice", async () => {
   assert.equal(repository.processCount, 1);
 });
 
+test("reprocesses one existing failed event without creating a second row", async () => {
+  const repository = new MemoryRepository();
+  repository.failNextProcessing = true;
+  const service = new ShopifyEventIngestionService(repository);
+  const event = body("subscription_contracts/create", "webhook-retry", {
+    admin_graphql_api_id: contractId,
+  });
+
+  await assert.rejects(service.ingest(event), /transient failure/);
+  assert.equal(repository.events.get("webhook-retry")?.processed, false);
+  assert.equal(repository.events.size, 1);
+
+  const retried = await service.ingest(event);
+
+  assert.deepEqual(retried, { duplicate: true, processed: true });
+  assert.equal(repository.processCount, 2);
+  assert.equal(repository.events.size, 1);
+  assert.equal(repository.events.get("webhook-retry")?.errorMessage, undefined);
+  assert.ok(repository.events.get("webhook-retry")?.processedAt);
+});
+
 test("creates a contract mirror from available webhook fields", async () => {
   const repository = new MemoryRepository();
   const service = new ShopifyEventIngestionService(repository);
@@ -125,6 +161,34 @@ test("updates a contract without replacing omitted fields", async () => {
 
   assert.equal(repository.contracts.get(contractId)?.status, "paused");
   assert.equal(repository.contracts.get(contractId)?.currencyCode, "BRL");
+});
+
+test("creates a minimal contract mirror when update arrives before create", async () => {
+  const repository = new MemoryRepository();
+  const service = new ShopifyEventIngestionService(repository);
+
+  await service.ingest(body("subscription_contracts/update", "webhook-update-first", {
+    admin_graphql_api_id: contractId,
+  }));
+
+  assert.equal(repository.contracts.has(contractId), true);
+  assert.equal(repository.contracts.get(contractId)?.status, undefined);
+  assert.equal(repository.contracts.get(contractId)?.interval, undefined);
+});
+
+test("keeps a billing attempt that arrives before contract creation", async () => {
+  const repository = new MemoryRepository();
+  const service = new ShopifyEventIngestionService(repository);
+
+  await service.ingest(body("subscription_billing_attempts/success", "webhook-attempt-first", {
+    admin_graphql_api_subscription_contract_id: contractId,
+    admin_graphql_api_id: "gid://shopify/SubscriptionBillingAttempt/early",
+  }));
+
+  assert.equal(repository.contracts.has(contractId), true);
+  assert.equal(repository.contracts.get(contractId)?.status, undefined);
+  assert.equal(repository.attempts.length, 1);
+  assert.equal(repository.attempts[0]?.status, "SUCCEEDED");
 });
 
 test("records a successful billing attempt and its Shopify order", async () => {

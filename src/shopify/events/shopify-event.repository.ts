@@ -123,7 +123,13 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
         case "subscription_billing_attempts/success":
         case "subscription_billing_attempts/failure":
         case "subscription_billing_attempts/challenged":
-          await this.recordBillingAttempt(transaction, event.topic, event.payload, shopId);
+          await this.recordBillingAttempt(
+            transaction,
+            event.topic,
+            event.payload,
+            shopId,
+            event.webhookId,
+          );
           break;
         case "app/uninstalled":
           await transaction.shop.update({
@@ -143,7 +149,7 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
   async markEventFailed(eventId: string, errorMessage: string) {
     await this.prisma.webhookEvent.update({
       where: { eventId },
-      data: { errorMessage },
+      data: { processed: false, processedAt: null, errorMessage },
     });
   }
 
@@ -155,15 +161,10 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
     const shopifyContractId = contractIdForContractWebhook(payload);
     if (!shopifyContractId) throw new Error("Contract identifier is unavailable");
     const patch = contractPatchFromPayload(payload);
-    const interval = optionalInteger(optionalObject(payload, "billing_policy"), "interval_count");
-    const intervalType = optionalString(optionalObject(payload, "billing_policy"), "interval");
-    if (interval === undefined || !intervalType) {
-      throw new Error("Billing policy is unavailable; GraphQL synchronization is required");
-    }
 
     await transaction.subscription.upsert({
       where: { shopId_shopifyContractId: { shopId, shopifyContractId } },
-      create: { shopId, shopifyContractId, ...patch, interval, intervalType },
+      create: { shopId, shopifyContractId, ...patch },
       update: patch,
     });
   }
@@ -176,9 +177,11 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
     const shopifyContractId = contractIdForContractWebhook(payload);
     if (!shopifyContractId) throw new Error("Contract identifier is unavailable");
 
-    await transaction.subscription.update({
+    const patch = contractPatchFromPayload(payload);
+    await transaction.subscription.upsert({
       where: { shopId_shopifyContractId: { shopId, shopifyContractId } },
-      data: contractPatchFromPayload(payload),
+      create: { shopId, shopifyContractId, ...patch },
+      update: patch,
     });
   }
 
@@ -187,44 +190,32 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
     topic: Extract<ShopifyEventTopic, `subscription_billing_attempts/${string}`>,
     payload: ShopifyEventPayload,
     shopId: string,
+    webhookEventId: string,
   ) {
     const shopifyContractId = contractIdFromPayload(payload);
     if (!shopifyContractId) throw new Error("Contract identifier is unavailable");
 
-    const subscription = await transaction.subscription.findUnique({
+    const subscription = await transaction.subscription.upsert({
       where: { shopId_shopifyContractId: { shopId, shopifyContractId } },
+      create: { shopId, shopifyContractId },
+      update: {},
       select: { id: true },
     });
-    if (!subscription) throw new Error("Subscription is unavailable");
 
     const attempt = billingAttemptDataFromPayload(topic, payload);
     const data = {
       shopId,
       subscriptionId: subscription.id,
       shopifyContractId,
+      webhookEventId,
       ...attempt,
     };
 
-    if (attempt.shopifyBillingAttemptId) {
-      await transaction.subscriptionBillingAttempt.upsert({
-        where: {
-          shopId_shopifyBillingAttemptId: {
-            shopId,
-            shopifyBillingAttemptId: attempt.shopifyBillingAttemptId,
-          },
-        },
-        create: data,
-        update: attempt,
-      });
-    } else if (attempt.idempotencyKey) {
-      await transaction.subscriptionBillingAttempt.upsert({
-        where: { shopId_idempotencyKey: { shopId, idempotencyKey: attempt.idempotencyKey } },
-        create: data,
-        update: attempt,
-      });
-    } else {
-      await transaction.subscriptionBillingAttempt.create({ data });
-    }
+    await transaction.subscriptionBillingAttempt.upsert({
+      where: { webhookEventId },
+      create: data,
+      update: attempt,
+    });
 
     await transaction.subscription.update({
       where: { id: subscription.id },
