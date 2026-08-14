@@ -28,7 +28,9 @@ model Subscription {
   shopId                String
   shop                  Shop                         @relation(fields: [shopId], references: [id], onDelete: Cascade)
   orders                SubscriptionOrder[]
+  contractLines         SubscriptionLine[]
   shopifyContractId     String?
+  shopifyRevisionId     String?
   shopifyOriginOrderId  String?
   shopifyCustomerId     String?
   shopifyProductId      String?
@@ -74,6 +76,7 @@ model WebhookEvent {
   shop         Shop?     @relation(fields: [shopId], references: [id], onDelete: Cascade)
   source       String
   eventId      String    @unique
+  shopifyEventId String?
   topic        String
   payload      Json
   processed    Boolean   @default(false)
@@ -81,6 +84,29 @@ model WebhookEvent {
   processedAt  DateTime?
   errorMessage String?
   createdAt    DateTime  @default(now())
+
+  @@index([shopifyEventId])
+}
+
+model SubscriptionLine {
+  id                        String       @id @default(cuid())
+  subscriptionId            String
+  subscription              Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  shopifySubscriptionLineId String
+  shopifyProductId          String?
+  shopifyVariantId          String?
+  shopifySellingPlanId      String?
+  quantity                  Int
+  currentPrice              Decimal?     @db.Decimal(10, 2)
+  currencyCode              String?
+  isActive                  Boolean      @default(true)
+  createdAt                 DateTime     @default(now())
+  updatedAt                 DateTime     @updatedAt
+
+  @@unique([subscriptionId, shopifySubscriptionLineId])
+  @@index([shopifyProductId])
+  @@index([shopifyVariantId])
+  @@index([shopifySellingPlanId])
 }
 
 model SubscriptionBillingAttempt {

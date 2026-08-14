@@ -19,9 +19,10 @@ import {
 } from "../shopify-event.types";
 
 class MemoryRepository implements ShopifyEventRepository {
-  shops = new Map([["known.myshopify.com", { id: "shop-1", isActive: true }]]);
-  events = new Map<string, { processed: boolean; processedAt?: Date; errorMessage?: string }>();
-  contracts = new Map<string, Partial<ReturnType<typeof contractPatchFromPayload>>>();
+  shops = new Map<string, { id: string; isActive: boolean; shopifyShopId?: string }>([["known.myshopify.com", { id: "shop-1", isActive: true }]]);
+  events = new Map<string, { processed: boolean; processedAt?: Date; errorMessage?: string; shopifyEventId?: string }>();
+  contracts = new Map<string, Partial<ReturnType<typeof contractPatchFromPayload>> & { shopifyRevisionId?: string; shopifyProductId?: string; shopifyVariantId?: string }>();
+  lines = new Map<string, Map<string, { quantity: number; currentPrice: string; isActive: boolean; sellingPlanId?: string }>>();
   attempts: Array<ReturnType<typeof billingAttemptDataFromPayload> & { webhookEventId: string }> = [];
   processCount = 0;
   failNextProcessing = false;
@@ -35,7 +36,7 @@ class MemoryRepository implements ShopifyEventRepository {
   }
 
   async createEvent(event: IncomingShopifyEvent) {
-    this.events.set(event.webhookId, { processed: false });
+    this.events.set(event.webhookId, { processed: false, shopifyEventId: event.shopifyEventId });
   }
 
   async processEvent(event: IncomingShopifyEvent) {
@@ -45,6 +46,7 @@ class MemoryRepository implements ShopifyEventRepository {
       throw new Error("transient failure");
     }
 
+    if (event.shopifyShopId) this.shops.set(event.shop, { ...this.shops.get(event.shop)!, shopifyShopId: event.shopifyShopId });
     if (event.topic === "subscription_contracts/create") {
       const id = optionalString(event.payload, "admin_graphql_api_id");
       if (!id) throw new Error("missing contract");
@@ -77,7 +79,16 @@ class MemoryRepository implements ShopifyEventRepository {
     } else if (event.topic === "app/uninstalled") {
       this.shops.set(event.shop, { id: "shop-1", isActive: false });
     }
-    this.events.set(event.webhookId, { processed: true, processedAt: new Date() });
+    if (event.contract) {
+      const currentLines = this.lines.get(event.contract.id) ?? new Map();
+      const incoming = new Set(event.contract.lines.map((line) => line.id));
+      for (const [id, line] of currentLines) if (!incoming.has(id)) currentLines.set(id, { ...line, isActive: false });
+      for (const line of event.contract.lines) currentLines.set(line.id, { quantity: line.quantity, currentPrice: line.currentPrice.amount, isActive: true, ...(line.sellingPlanId && { sellingPlanId: line.sellingPlanId }) });
+      this.lines.set(event.contract.id, currentLines);
+      const stored = this.contracts.get(event.contract.id) ?? {};
+      this.contracts.set(event.contract.id, { ...stored, ...(event.contract.revisionId && { shopifyRevisionId: event.contract.revisionId }), shopifyProductId: event.contract.lines[0]?.productId, shopifyVariantId: event.contract.lines[0]?.variantId });
+    }
+    this.events.set(event.webhookId, { ...this.events.get(event.webhookId), processed: true, processedAt: new Date(), errorMessage: undefined });
   }
 
   async markEventFailed(eventId: string, errorMessage: string) {
@@ -375,4 +386,79 @@ test("accepts optional enriched contract fields being absent", async () => {
   const repository = new MemoryRepository();
   await new ShopifyEventIngestionService(repository).ingest(event);
   assert.equal(repository.events.get("minimal-enriched")?.processed, true);
+});
+
+function linkedContractEvent(webhookId: string, lineNumbers: number[], topic = "subscription_contracts/create") {
+  const event = body(topic, webhookId, { admin_graphql_api_id: contractId, status: "active" });
+  return {
+    ...event,
+    shopifyShopId: "gid://shopify/Shop/123",
+    shopifyEventId: "shopify-event-shared",
+    contract: {
+      ...event.contract!,
+      revisionId: "revision-9",
+      lines: lineNumbers.map((number) => ({
+        id: `gid://shopify/SubscriptionLine/${number}`,
+        productId: `gid://shopify/Product/${number}`,
+        variantId: `gid://shopify/ProductVariant/${number}`,
+        sellingPlanId: `gid://shopify/SellingPlan/${number}`,
+        quantity: number,
+        currentPrice: { amount: `${number * 10}.00`, currencyCode: "BRL" },
+      })),
+    },
+  };
+}
+
+test("stores the Shopify shop, event and revision identifiers", async () => {
+  const repository = new MemoryRepository();
+  await new ShopifyEventIngestionService(repository).ingest(linkedContractEvent("delivery-link-1", [1]));
+  assert.equal(repository.shops.get("known.myshopify.com")?.shopifyShopId, "gid://shopify/Shop/123");
+  assert.equal(repository.events.get("delivery-link-1")?.shopifyEventId, "shopify-event-shared");
+  assert.equal(repository.contracts.get(contractId)?.shopifyRevisionId, "revision-9");
+});
+
+test("allows multiple deliveries to share one Shopify event identifier", async () => {
+  const repository = new MemoryRepository();
+  const service = new ShopifyEventIngestionService(repository);
+  await service.ingest(linkedContractEvent("delivery-a", [1]));
+  await service.ingest(linkedContractEvent("delivery-b", [1], "subscription_contracts/update"));
+  assert.equal([...repository.events.values()].filter((event) => event.shopifyEventId === "shopify-event-shared").length, 2);
+});
+
+test("stores multiple lines without duplicating them on upsert", async () => {
+  const repository = new MemoryRepository();
+  const service = new ShopifyEventIngestionService(repository);
+  await service.ingest(linkedContractEvent("lines-1", [1, 2]));
+  await service.ingest(linkedContractEvent("lines-2", [1, 2], "subscription_contracts/update"));
+  assert.equal(repository.lines.get(contractId)?.size, 2);
+  assert.equal(repository.lines.get(contractId)?.get("gid://shopify/SubscriptionLine/2")?.sellingPlanId, "gid://shopify/SellingPlan/2");
+});
+
+test("updates line quantity and price", async () => {
+  const repository = new MemoryRepository();
+  const service = new ShopifyEventIngestionService(repository);
+  await service.ingest(linkedContractEvent("line-update-1", [1]));
+  const changed = linkedContractEvent("line-update-2", [1], "subscription_contracts/update");
+  changed.contract.lines[0]!.quantity = 5;
+  changed.contract.lines[0]!.currentPrice.amount = "55.00";
+  await service.ingest(changed);
+  assert.deepEqual(repository.lines.get(contractId)?.get("gid://shopify/SubscriptionLine/1"), { quantity: 5, currentPrice: "55.00", isActive: true, sellingPlanId: "gid://shopify/SellingPlan/1" });
+});
+
+test("deactivates removed lines and reactivates a readded line", async () => {
+  const repository = new MemoryRepository();
+  const service = new ShopifyEventIngestionService(repository);
+  await service.ingest(linkedContractEvent("line-life-1", [1, 2]));
+  await service.ingest(linkedContractEvent("line-life-2", [], "subscription_contracts/update"));
+  assert.equal(repository.lines.get(contractId)?.get("gid://shopify/SubscriptionLine/1")?.isActive, false);
+  await service.ingest(linkedContractEvent("line-life-3", [1], "subscription_contracts/update"));
+  assert.equal(repository.lines.get(contractId)?.get("gid://shopify/SubscriptionLine/1")?.isActive, true);
+  assert.equal(repository.lines.get(contractId)?.get("gid://shopify/SubscriptionLine/2")?.isActive, false);
+});
+
+test("keeps singular product and variant compatibility fields from the first line", async () => {
+  const repository = new MemoryRepository();
+  await new ShopifyEventIngestionService(repository).ingest(linkedContractEvent("singular-ids", [7, 8]));
+  assert.equal(repository.contracts.get(contractId)?.shopifyProductId, "gid://shopify/Product/7");
+  assert.equal(repository.contracts.get(contractId)?.shopifyVariantId, "gid://shopify/ProductVariant/7");
 });
