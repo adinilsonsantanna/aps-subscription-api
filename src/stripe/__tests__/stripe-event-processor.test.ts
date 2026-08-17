@@ -19,7 +19,7 @@ test("repeated Stripe event is processed once", async () => {
   const prisma: any = {
     subscription: { findFirst: async () => subscription, update: async ({ data }: any) => { updates += 1; Object.assign(subscription, data); } },
     webhookEvent: { findUnique: async ({ where }: any) => events.get(where.eventId) || null, create: async ({ data }: any) => { events.set(data.eventId, { processed: false }); }, update: async ({ where }: any) => { events.set(where.eventId, { processed: true }); } },
-    subscriptionOrder: { findFirst: async () => null, create: async () => ({}) },
+    subscriptionOrder: { findFirst: async () => null, create: async () => ({}), update: async () => ({}) },
     subscriptionStatusHistory: { upsert: async () => ({}) },
     $transaction: async (callback: any) => callback(prisma),
   };
@@ -28,4 +28,98 @@ test("repeated Stripe event is processed once", async () => {
   assert.equal((await processor.process(value)).duplicate, false);
   assert.equal((await processor.process(value)).duplicate, true);
   assert.equal(updates, 1);
+});
+
+function invoiceEvent(type: "invoice.payment_succeeded" | "invoice.payment_failed" | "invoice.payment_action_required", id: string, overrides: Record<string, unknown> = {}) {
+  return event(type, 500, { id, subscription: "sub_historical", amount_paid: type === "invoice.payment_succeeded" ? 12990 : 0, currency: "brl", billing_reason: "subscription_cycle", lines: { data: [{ period: { end: 900 } }] }, ...overrides }, `evt_${id}_${type}`);
+}
+
+function processorContext(gateway = "stripe") {
+  const events = new Map<string, { processed: boolean }>();
+  const orders: any[] = [];
+  const subscription: any = { ...state(), gateway, externalId: "sub_historical", stripeCustomerId: "cus_historical", stripePaymentMethodId: "pm_historical", shopifyVariantId: "123", nextBillingAt: null, shop: { domain: "known.myshopify.com" } };
+  let shopifyCalls = 0;
+  let failShopify = false;
+  const prisma: any = {
+    subscription: {
+      findFirst: async ({ where }: any) => where.gateway === subscription.gateway && where.externalId === subscription.externalId ? subscription : null,
+      update: async ({ data }: any) => { Object.assign(subscription, data); return subscription; },
+    },
+    webhookEvent: {
+      findUnique: async ({ where }: any) => events.get(where.eventId) || null,
+      create: async ({ data }: any) => { events.set(data.eventId, { processed: false }); },
+      update: async ({ where, data }: any) => { events.set(where.eventId, { processed: data.processed }); },
+    },
+    subscriptionOrder: {
+      findFirst: async ({ where }: any) => orders.find((order) => order.gatewayOrderId === where.gatewayOrderId && order.subscriptionId === where.subscriptionId) || null,
+      create: async ({ data }: any) => { const order = { id: `order-${orders.length + 1}`, ...data }; orders.push(order); return order; },
+      update: async ({ where, data }: any) => { const order = orders.find((candidate) => candidate.id === where.id); Object.assign(order, data); return order; },
+    },
+    subscriptionStatusHistory: { upsert: async () => ({}) },
+    $transaction: async (callback: any) => callback(prisma),
+  };
+  const recurring = { create: async () => { shopifyCalls += 1; if (failShopify) throw new Error("shopify unavailable"); return "gid://shopify/Order/999"; } };
+  return { processor: new StripeEventProcessor(prisma, recurring), subscription, orders, events, shopifyCalls: () => shopifyCalls, failShopify: () => { failShopify = true; } };
+}
+
+test("succeeded stores the real amount, currency, payment status and next billing date", async () => {
+  process.env.ENABLE_LEGACY_SUBSCRIPTION_FLOW = "false";
+  const context = processorContext();
+  await context.processor.process(invoiceEvent("invoice.payment_succeeded", "in_paid"));
+  assert.equal(context.orders[0].amount, 129.9);
+  assert.equal(context.orders[0].currency, "BRL");
+  assert.equal(context.orders[0].status, "paid");
+  assert.equal(context.subscription.lastPaymentStatus, "succeeded");
+  assert.equal(context.subscription.nextBillingAt.toISOString(), new Date(900_000).toISOString());
+  assert.equal(context.subscription.externalId, "sub_historical");
+  assert.equal(context.subscription.stripeCustomerId, "cus_historical");
+  assert.equal(context.subscription.stripePaymentMethodId, "pm_historical");
+});
+
+test("recurring succeeded creates and persists one Shopify order and redelivery does not duplicate it", async () => {
+  process.env.ENABLE_LEGACY_SUBSCRIPTION_FLOW = "true";
+  const context = processorContext();
+  const value = invoiceEvent("invoice.payment_succeeded", "in_recurring");
+  await context.processor.process(value);
+  await context.processor.process(value);
+  await context.processor.process({ ...value, id: "evt_redelivery" });
+  assert.equal(context.shopifyCalls(), 1);
+  assert.equal(context.orders.length, 1);
+  assert.equal(context.orders[0].shopifyOrderId, "gid://shopify/Order/999");
+});
+
+test("Shopify order failure leaves the webhook unfinished for retry", async () => {
+  process.env.ENABLE_LEGACY_SUBSCRIPTION_FLOW = "true";
+  const context = processorContext();
+  context.failShopify();
+  const value = invoiceEvent("invoice.payment_succeeded", "in_retry");
+  await assert.rejects(context.processor.process(value), /shopify unavailable/);
+  assert.equal(context.events.get(value.id)?.processed, false);
+  assert.equal(context.orders.length, 0);
+});
+
+test("disabled historical flow and failed invoices never create Shopify orders", async () => {
+  const disabled = processorContext();
+  process.env.ENABLE_LEGACY_SUBSCRIPTION_FLOW = "false";
+  await disabled.processor.process(invoiceEvent("invoice.payment_succeeded", "in_disabled"));
+  assert.equal(disabled.shopifyCalls(), 0);
+  const failed = processorContext();
+  process.env.ENABLE_LEGACY_SUBSCRIPTION_FLOW = "true";
+  await failed.processor.process(invoiceEvent("invoice.payment_failed", "in_failed"));
+  assert.equal(failed.shopifyCalls(), 0);
+  assert.equal(failed.subscription.status, "active");
+  assert.equal(failed.subscription.lastPaymentStatus, "failed");
+  assert.equal(failed.orders[0].status, "failed");
+});
+
+test("payment action required remains challenged and Shopify subscriptions never enter Stripe invoice flow", async () => {
+  const challenged = processorContext();
+  await challenged.processor.process(invoiceEvent("invoice.payment_action_required", "in_challenged"));
+  assert.equal(challenged.subscription.lastPaymentStatus, "challenged");
+  assert.equal(challenged.shopifyCalls(), 0);
+  const shopify = processorContext("shopify");
+  const result = await shopify.processor.process(invoiceEvent("invoice.payment_succeeded", "in_shopify"));
+  assert.equal(result.ignored, true);
+  assert.equal(shopify.orders.length, 0);
+  assert.equal(shopify.shopifyCalls(), 0);
 });

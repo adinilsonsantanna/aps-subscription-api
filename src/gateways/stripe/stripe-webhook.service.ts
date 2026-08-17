@@ -13,31 +13,4 @@ export class StripeWebhookService {
             env.STRIPE_WEBHOOK_SECRET
         );
     }
-
-    async handleInvoicePaymentSucceeded(invoice: Stripe.Invoice) {
-        console.log("[Stripe Webhook] Pagamento bem-sucedido:", invoice.id);
-        return {
-            invoiceId: invoice.id,
-            subscriptionId: invoice.subscription,
-            amount: invoice.amount_paid / 100,
-            status: "paid",
-        };
-    }
-
-    async handleInvoicePaymentFailed(invoice: Stripe.Invoice) {
-        console.log("[Stripe Webhook] Pagamento falhou:", invoice.id);
-        return {
-            invoiceId: invoice.id,
-            subscriptionId: invoice.subscription,
-            status: "failed",
-        };
-    }
-
-    async handleSubscriptionDeleted(subscription: Stripe.Subscription) {
-        console.log("[Stripe Webhook] Assinatura cancelada:", subscription.id);
-        return {
-            subscriptionId: subscription.id,
-            status: "canceled",
-        };
-    }
 }

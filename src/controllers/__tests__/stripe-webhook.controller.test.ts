@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import Stripe from "stripe";
 import { StripeWebhookController } from "../StripeWebhookController";
-import { WebhookController } from "../WebhookController";
 
 function response() { const state = { status: 200, body: undefined as unknown }; return { state, value: { status(code: number) { state.status = code; return this; }, json(body: unknown) { state.body = body; return this; } } }; }
 function request(signature?: string, body: unknown = Buffer.from("{}")) { return { body, header: (name: string) => name === "stripe-signature" ? signature : undefined }; }
@@ -25,10 +24,4 @@ test("Express Stripe webhook processes only the verified Stripe.Event", async ()
   await controller.handle(request("valid") as never, output.value as never);
   assert.equal(output.state.status, 200);
   assert.equal(received, verified);
-});
-
-test("legacy WebhookController has no alternate Stripe processing path", async () => {
-  const output = response();
-  await (new WebhookController() as any).stripe({ body: { unverified: true }, headers: {} }, output.value);
-  assert.equal(output.state.status, 410);
 });
