@@ -178,13 +178,7 @@ export class WebhookController {
         /*
          * Mantém o comportamento de teste existente.
          */
-        event = {
-          id:
-            req.body.id ||
-            `evt_test_${Date.now()}`,
-          type: req.body.type,
-          data: req.body.data,
-        };
+        return res.status(400).json({ error: "Invalid Stripe signature" });
       }
 
       // ============================================================
@@ -458,6 +452,7 @@ export class WebhookController {
               where: {
                 externalId:
                   result.subscriptionId as string,
+                gateway: "stripe",
               },
               include: {
                 shop: true,
@@ -682,6 +677,7 @@ export class WebhookController {
               where: {
                 externalId:
                   result.subscriptionId as string,
+                gateway: "stripe",
               },
             });
 
@@ -737,6 +733,7 @@ export class WebhookController {
               where: {
                 externalId:
                   result.subscriptionId,
+                gateway: "stripe",
               },
             });
 

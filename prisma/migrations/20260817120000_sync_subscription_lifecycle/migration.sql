@@ -1,3 +1,5 @@
+ALTER TABLE "Subscription" ADD COLUMN "lastGatewayEventAt" TIMESTAMP(3);
+
 CREATE TABLE "SubscriptionLifecycleAction" (
   "id" TEXT NOT NULL,
   "subscriptionId" TEXT NOT NULL,
@@ -9,12 +11,14 @@ CREATE TABLE "SubscriptionLifecycleAction" (
   "externalStatus" TEXT,
   "errorCode" TEXT,
   "errorMessage" TEXT,
+  "httpStatus" INTEGER,
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "completedAt" TIMESTAMP(3),
   "updatedAt" TIMESTAMP(3) NOT NULL,
   CONSTRAINT "SubscriptionLifecycleAction_pkey" PRIMARY KEY ("id")
 );
 CREATE UNIQUE INDEX "SubscriptionLifecycleAction_subscriptionId_idempotencyKey_key" ON "SubscriptionLifecycleAction"("subscriptionId", "idempotencyKey");
+CREATE UNIQUE INDEX "SubscriptionLifecycleAction_one_pending_per_subscription_key" ON "SubscriptionLifecycleAction"("subscriptionId") WHERE "status" = 'pending';
 CREATE INDEX "SubscriptionLifecycleAction_subscriptionId_idx" ON "SubscriptionLifecycleAction"("subscriptionId");
 CREATE INDEX "SubscriptionLifecycleAction_status_idx" ON "SubscriptionLifecycleAction"("status");
 ALTER TABLE "SubscriptionLifecycleAction" ADD CONSTRAINT "SubscriptionLifecycleAction_subscriptionId_fkey" FOREIGN KEY ("subscriptionId") REFERENCES "Subscription"("id") ON DELETE CASCADE ON UPDATE CASCADE;

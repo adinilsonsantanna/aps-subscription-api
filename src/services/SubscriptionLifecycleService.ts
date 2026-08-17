@@ -30,7 +30,8 @@ export class SubscriptionLifecycleService {
     if (existing) {
       if (existing.action !== action) throw new LifecycleError(409, "idempotency_conflict", "Idempotency key was used for another action");
       if (existing.status === "succeeded") return this.response(existing, true);
-      throw new LifecycleError(409, "action_in_progress", "Lifecycle action is already pending or failed");
+      if (existing.status === "failed") throw new LifecycleError(existing.httpStatus || 502, existing.errorCode || "external_gateway_error", existing.errorMessage || "External gateway request failed");
+      throw new LifecycleError(409, "action_in_progress", "Lifecycle action is already pending");
     }
     if (action === "cancel" && current === "cancelled") return { success: true, duplicate: true, action, gateway: subscription.gateway, status: "cancelled" };
     const pending = await this.prisma.subscriptionLifecycleAction.findFirst({ where: { subscriptionId, status: "pending" } });
@@ -40,7 +41,12 @@ export class SubscriptionLifecycleService {
     try {
       record = await this.prisma.subscriptionLifecycleAction.create({ data: { subscriptionId, idempotencyKey, action, gateway: subscription.gateway, actor, status: "pending" } });
     } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") throw new LifecycleError(409, "action_in_progress", "Lifecycle action is already pending");
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        const claimed = await this.prisma.subscriptionLifecycleAction.findUnique({ where: { subscriptionId_idempotencyKey: { subscriptionId, idempotencyKey } } });
+        if (claimed?.action === action && claimed.status === "succeeded") return this.response(claimed, true);
+        if (claimed?.action === action && claimed.status === "failed") throw new LifecycleError(claimed.httpStatus || 502, claimed.errorCode || "external_gateway_error", claimed.errorMessage || "External gateway request failed");
+        throw new LifecycleError(409, "action_in_progress", "Another lifecycle action is pending");
+      }
       throw error;
     }
 
@@ -59,7 +65,7 @@ export class SubscriptionLifecycleService {
       return this.response(completed, false);
     } catch (error) {
       const safe = error instanceof LifecycleError ? error : new LifecycleError(502, "external_gateway_error", "External gateway request failed");
-      await this.prisma.subscriptionLifecycleAction.update({ where: { id: record.id }, data: { status: "failed", errorCode: safe.code, errorMessage: safe.message.slice(0, 250), completedAt: new Date() } });
+      await this.prisma.subscriptionLifecycleAction.update({ where: { id: record.id }, data: { status: "failed", errorCode: safe.code, errorMessage: safe.message.slice(0, 250), httpStatus: safe.statusCode, completedAt: new Date() } });
       throw safe;
     }
   }

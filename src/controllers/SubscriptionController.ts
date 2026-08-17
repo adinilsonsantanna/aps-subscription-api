@@ -24,6 +24,18 @@ export class SubscriptionController {
             return res.status(500).json({ error: { code: "internal_error", message: "Internal error" } });
         }
     }
+
+    async cancelCompatibility(req: Request, res: Response) {
+        try {
+            const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+            const key = req.header("Idempotency-Key") || "";
+            const actor = typeof req.body?.actor === "string" ? req.body.actor.toUpperCase() : "CUSTOMER";
+            return res.status(200).json(await this.lifecycle.execute(id, "cancel", key, actor));
+        } catch (error) {
+            if (error instanceof LifecycleError) return res.status(error.statusCode).json({ error: { code: error.code, message: error.message } });
+            return res.status(500).json({ error: { code: "internal_error", message: "Internal error" } });
+        }
+    }
     async listByShop(req: Request, res: Response) {
         try {
             const domain = Array.isArray(req.params.domain) ? req.params.domain[0] : req.params.domain;
@@ -248,33 +260,4 @@ export class SubscriptionController {
         }
     }
 
-    async cancel(req: Request, res: Response) {
-        try {
-            const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-
-            const subscription = await prisma.subscription.findUnique({
-                where: { id },
-                include: { shop: true },
-            });
-
-            if (!subscription) {
-                return res.status(404).json({ error: "Assinatura nao encontrada" });
-            }
-
-            if (subscription.externalId && subscription.gateway === "stripe") {
-                const gateway = GatewayFactory.create("stripe");
-                await gateway.cancelSubscription(subscription.externalId);
-            }
-
-            const updated = await prisma.subscription.update({
-                where: { id },
-                data: { status: "canceled" },
-            });
-
-            return res.status(200).json(updated);
-        } catch (error) {
-            console.error("[SubscriptionController.cancel]", error);
-            return res.status(500).json({ error: "Erro ao cancelar assinatura" });
-        }
-    }
 }

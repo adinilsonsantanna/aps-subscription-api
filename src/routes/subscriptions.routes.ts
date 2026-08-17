@@ -12,5 +12,6 @@ router.get("/:domain", controller.listByShop.bind(controller));
 router.post("/", controller.create.bind(controller));
 router.get("/detail/:id", controller.getById.bind(controller));
 router.patch("/:id/status", controller.updateStatus.bind(controller));
+router.delete("/:id", controller.cancelCompatibility.bind(controller));
 
 export default router;

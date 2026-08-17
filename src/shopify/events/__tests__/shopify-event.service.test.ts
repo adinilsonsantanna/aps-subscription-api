@@ -7,7 +7,9 @@ import {
   contractPatchFromPayload,
   contractUpdatePatch,
   newShopifySubscriptionData,
+  shouldApplyShopifyContractEvent,
 } from "../shopify-event.repository";
+
 import { ShopifyEventIngestionService } from "../shopify-event.service";
 import {
   IncomingShopifyEvent,
@@ -17,6 +19,21 @@ import {
   contractIdFromPayload,
   optionalString,
 } from "../shopify-event.types";
+
+test("cancelled Shopify contract rejects an older PAUSED revision", () => {
+  assert.equal(shouldApplyShopifyContractEvent("cancelled", "gid://shopify/SubscriptionContractRevision/20", "PAUSED", "gid://shopify/SubscriptionContractRevision/19"), false);
+  assert.equal(shouldApplyShopifyContractEvent("failed", "20", "ACTIVE", "21"), false);
+});
+
+test("Shopify revision ID rejects out-of-order non-terminal updates", () => {
+  assert.equal(shouldApplyShopifyContractEvent("paused", "revision-20", "ACTIVE", "revision-19"), false);
+  assert.equal(shouldApplyShopifyContractEvent("paused", "revision-20", "ACTIVE", "revision-21"), true);
+});
+
+test("Shopify event without revision cannot make an unordered reversible transition", () => {
+  assert.equal(shouldApplyShopifyContractEvent("active", null, "PAUSED"), false);
+  assert.equal(shouldApplyShopifyContractEvent("active", null, "CANCELLED"), true);
+});
 
 class MemoryRepository implements ShopifyEventRepository {
   shops = new Map<string, { id: string; isActive: boolean; shopifyShopId?: string }>([["known.myshopify.com", { id: "shop-1", isActive: true }]]);

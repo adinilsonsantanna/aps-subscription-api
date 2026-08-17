@@ -85,6 +85,22 @@ export function newShopifySubscriptionData(contract: NormalizedShopifyContract) 
   } satisfies Omit<Prisma.SubscriptionUncheckedCreateInput, "shopId">;
 }
 
+function revisionNumber(value?: string | null) {
+  const match = value?.match(/(\d+)(?:\D*)$/);
+  return match ? BigInt(match[1]) : undefined;
+}
+
+export function shouldApplyShopifyContractEvent(currentStatus: string | null | undefined, currentRevision: string | null | undefined, incomingStatus: string, incomingRevision?: string) {
+  const current = String(currentStatus || "").toLowerCase();
+  const next = incomingStatus.toLowerCase();
+  if (["cancelled", "expired", "failed"].includes(current) && ["active", "paused"].includes(next)) return false;
+  const previousNumber = revisionNumber(currentRevision);
+  const incomingNumber = revisionNumber(incomingRevision);
+  if (previousNumber !== undefined && incomingNumber !== undefined && incomingNumber <= previousNumber) return false;
+  if (!incomingRevision && current && current !== next && !["cancelled", "expired", "failed"].includes(next)) return false;
+  return true;
+}
+
 export function billingAttemptDataFromPayload(
   topic: Extract<ShopifyEventTopic, `subscription_billing_attempts/${string}`>,
   payload: ShopifyEventPayload,
@@ -196,6 +212,8 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
     const shopifyContractId = contract.id;
     const createData = newShopifySubscriptionData(contract);
     const patch = contractUpdatePatch(contract);
+    const existing = await transaction.subscription.findUnique({ where: { shopId_shopifyContractId: { shopId, shopifyContractId } }, select: { status: true, shopifyRevisionId: true } });
+    if (existing && !shouldApplyShopifyContractEvent(existing.status, existing.shopifyRevisionId, contract.status, contract.revisionId)) return;
 
     const subscription = await transaction.subscription.upsert({
       where: { shopId_shopifyContractId: { shopId, shopifyContractId } },
@@ -231,7 +249,8 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
   ) {
     const shopifyContractId = contract.id;
     const requestedPatch = Object.fromEntries(Object.entries(contractUpdatePatch(contract)).filter(([, value]) => value !== undefined));
-    const existing = await transaction.subscription.findUnique({ where: { shopId_shopifyContractId: { shopId, shopifyContractId } }, select: { status: true, lastPaymentStatus: true } });
+    const existing = await transaction.subscription.findUnique({ where: { shopId_shopifyContractId: { shopId, shopifyContractId } }, select: { status: true, lastPaymentStatus: true, shopifyRevisionId: true } });
+    if (existing && !shouldApplyShopifyContractEvent(existing.status, existing.shopifyRevisionId, contract.status, contract.revisionId)) return;
     const terminal = ["cancelled", "expired", "failed"].includes(String(existing?.status).toLowerCase());
     const patch = terminal && contract.status.toLowerCase() === "active"
       ? Object.fromEntries(Object.entries(requestedPatch).filter(([key]) => key !== "status"))

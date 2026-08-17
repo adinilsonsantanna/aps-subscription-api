@@ -49,6 +49,7 @@ model Subscription {
   intervalType          String?
   nextBillingAt         DateTime?
   lastPaymentStatus     String?
+  lastGatewayEventAt    DateTime?
   billingAttempts       SubscriptionBillingAttempt[]
   lifecycleActions      SubscriptionLifecycleAction[]
   statusHistory         SubscriptionStatusHistory[]
@@ -71,6 +72,7 @@ model SubscriptionLifecycleAction {
   externalStatus String?
   errorCode      String?
   errorMessage   String?
+  httpStatus     Int?
   createdAt      DateTime                    @default(now())
   completedAt    DateTime?
   updatedAt      DateTime                    @updatedAt
