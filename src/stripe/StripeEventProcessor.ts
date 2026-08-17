@@ -22,14 +22,22 @@ export function reconciliationForStripeEvent(event: Stripe.Event): StripeReconci
   return null;
 }
 
-export function safeStripePatch(subscription: Pick<Subscription, "status" | "lastGatewayEventAt">, event: Stripe.Event, reconciliation: StripeReconciliation) {
+export function safeStripePatch(subscription: Pick<Subscription, "status" | "lastGatewayStatusEventAt" | "lastGatewayPaymentEventAt">, event: Stripe.Event, reconciliation: StripeReconciliation) {
   const current = String(subscription.status || "").toLowerCase();
   const eventAt = Number.isFinite(event.created) && event.created > 0 ? new Date(event.created * 1000) : undefined;
-  const stale = Boolean(eventAt && subscription.lastGatewayEventAt && eventAt <= subscription.lastGatewayEventAt);
+  const isStatusEvent = reconciliation.operationalStatus !== undefined;
+  const isPaymentEvent = reconciliation.paymentStatus !== undefined;
+  const statusStale = Boolean(isStatusEvent && eventAt && subscription.lastGatewayStatusEventAt && eventAt <= subscription.lastGatewayStatusEventAt);
+  const paymentStale = Boolean(isPaymentEvent && eventAt && subscription.lastGatewayPaymentEventAt && eventAt <= subscription.lastGatewayPaymentEventAt);
   let next = reconciliation.operationalStatus;
   if (next && TERMINAL.has(current) && !TERMINAL.has(next)) next = undefined;
-  if (stale || (!eventAt && next && !TERMINAL.has(next))) next = undefined;
-  return { ...(next ? { status: next } : {}), ...(reconciliation.paymentStatus ? { lastPaymentStatus: reconciliation.paymentStatus } : {}), ...(eventAt && !stale ? { lastGatewayEventAt: eventAt } : {}) };
+  if (statusStale || (!eventAt && next && !TERMINAL.has(next))) next = undefined;
+  return {
+    ...(next ? { status: next } : {}),
+    ...(isPaymentEvent && !paymentStale ? { lastPaymentStatus: reconciliation.paymentStatus } : {}),
+    ...(isStatusEvent && eventAt && !statusStale ? { lastGatewayStatusEventAt: eventAt } : {}),
+    ...(isPaymentEvent && eventAt && !paymentStale ? { lastGatewayPaymentEventAt: eventAt } : {}),
+  };
 }
 
 export class StripeEventProcessor {
@@ -51,7 +59,7 @@ export class StripeEventProcessor {
         const attempt = await tx.subscriptionOrder.findFirst({ where: { gatewayOrderId: reconciliation.invoiceId, subscriptionId: subscription.id } });
         if (!attempt) await tx.subscriptionOrder.create({ data: { subscriptionId: subscription.id, gatewayOrderId: reconciliation.invoiceId, amount: 0, status: reconciliation.paymentStatus, processedAt: new Date() } });
       }
-      await tx.subscriptionStatusHistory.upsert({ where: { source_sourceEventId: { source: "stripe_webhook", sourceEventId: event.id } }, create: { subscriptionId: subscription.id, previousStatus: subscription.status, newStatus: (patch as { status?: string }).status || subscription.status || "active", previousPaymentStatus: subscription.lastPaymentStatus, newPaymentStatus: reconciliation.paymentStatus || subscription.lastPaymentStatus, source: "stripe_webhook", sourceEventId: event.id }, update: {} });
+      await tx.subscriptionStatusHistory.upsert({ where: { source_sourceEventId: { source: "stripe_webhook", sourceEventId: event.id } }, create: { subscriptionId: subscription.id, previousStatus: subscription.status, newStatus: (patch as { status?: string }).status || subscription.status || "active", previousPaymentStatus: subscription.lastPaymentStatus, newPaymentStatus: (patch as { lastPaymentStatus?: string }).lastPaymentStatus || subscription.lastPaymentStatus, source: "stripe_webhook", sourceEventId: event.id }, update: {} });
       await tx.webhookEvent.update({ where: { eventId: event.id }, data: { processed: true, processedAt: new Date(), errorMessage: null } });
     });
     return { processed: true, duplicate: false };

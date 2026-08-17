@@ -13,3 +13,12 @@ test("legacy DELETE compatibility delegates cancel to the idempotent lifecycle f
   assert.deepEqual(received, ["aps-1", "cancel", "delete-key", "CUSTOMER"]);
   assert.equal(state.status, 200);
 });
+
+test("legacy DELETE generates a deterministic idempotency key when header is absent", async () => {
+  let received: unknown[] = [];
+  const controller = new SubscriptionController({ execute: async (...args: unknown[]) => { received = args; return { success: true }; } } as never);
+  const request = { params: { id: "aps-legacy" }, body: {}, header: () => undefined };
+  const response = { status() { return this; }, json() { return this; } };
+  await controller.cancelCompatibility(request as never, response as never);
+  assert.deepEqual(received, ["aps-legacy", "cancel", "legacy-delete:aps-legacy", "CUSTOMER"]);
+});

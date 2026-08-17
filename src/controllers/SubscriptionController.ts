@@ -28,7 +28,7 @@ export class SubscriptionController {
     async cancelCompatibility(req: Request, res: Response) {
         try {
             const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-            const key = req.header("Idempotency-Key") || "";
+            const key = req.header("Idempotency-Key") || `legacy-delete:${id}`;
             const actor = typeof req.body?.actor === "string" ? req.body.actor.toUpperCase() : "CUSTOMER";
             return res.status(200).json(await this.lifecycle.execute(id, "cancel", key, actor));
         } catch (error) {

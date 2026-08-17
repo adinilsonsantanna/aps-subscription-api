@@ -24,37 +24,38 @@ model Shop {
 }
 
 model Subscription {
-  id                    String                        @id @default(cuid())
-  shopId                String
-  shop                  Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  orders                SubscriptionOrder[]
-  contractLines         SubscriptionLine[]
-  shopifyContractId     String?
-  shopifyRevisionId     String?
-  shopifyOriginOrderId  String?
-  shopifyCustomerId     String?
-  shopifyProductId      String?
-  shopifyVariantId      String?
-  gateway               String?
-  externalId            String?
-  stripeCustomerId      String?
-  stripePaymentMethodId String?
-  status                String?
-  currencyCode          String?
-  billingInterval       String?
-  billingIntervalCount  Int?
-  deliveryInterval      String?
-  deliveryIntervalCount Int?
-  interval              Int?
-  intervalType          String?
-  nextBillingAt         DateTime?
-  lastPaymentStatus     String?
-  lastGatewayEventAt    DateTime?
-  billingAttempts       SubscriptionBillingAttempt[]
-  lifecycleActions      SubscriptionLifecycleAction[]
-  statusHistory         SubscriptionStatusHistory[]
-  createdAt             DateTime                      @default(now())
-  updatedAt             DateTime                      @updatedAt
+  id                        String                        @id @default(cuid())
+  shopId                    String
+  shop                      Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  orders                    SubscriptionOrder[]
+  contractLines             SubscriptionLine[]
+  shopifyContractId         String?
+  shopifyRevisionId         String?
+  shopifyOriginOrderId      String?
+  shopifyCustomerId         String?
+  shopifyProductId          String?
+  shopifyVariantId          String?
+  gateway                   String?
+  externalId                String?
+  stripeCustomerId          String?
+  stripePaymentMethodId     String?
+  status                    String?
+  currencyCode              String?
+  billingInterval           String?
+  billingIntervalCount      Int?
+  deliveryInterval          String?
+  deliveryIntervalCount     Int?
+  interval                  Int?
+  intervalType              String?
+  nextBillingAt             DateTime?
+  lastPaymentStatus         String?
+  lastGatewayStatusEventAt  DateTime?
+  lastGatewayPaymentEventAt DateTime?
+  billingAttempts           SubscriptionBillingAttempt[]
+  lifecycleActions          SubscriptionLifecycleAction[]
+  statusHistory             SubscriptionStatusHistory[]
+  createdAt                 DateTime                      @default(now())
+  updatedAt                 DateTime                      @updatedAt
 
   @@unique([shopId, shopifyContractId])
   @@index([shopifyContractId])

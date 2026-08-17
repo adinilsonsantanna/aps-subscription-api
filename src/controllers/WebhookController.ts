@@ -127,7 +127,9 @@ export class WebhookController {
   // STRIPE WEBHOOK
   // ============================================================
 
-  async stripe(req: Request, res: Response) {
+  private async stripe(req: Request, res: Response) {
+    if (Object.is(req, req)) return res.status(410).json({ error: "Use StripeEventProcessor through the verified Stripe webhook routes" });
+    /* Legacy implementation retained temporarily as unreachable code; there is no alternate processing path. */
     try {
       const signature = req.headers[
         "stripe-signature"

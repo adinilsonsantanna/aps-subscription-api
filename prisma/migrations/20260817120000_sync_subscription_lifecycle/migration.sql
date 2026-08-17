@@ -1,4 +1,6 @@
-ALTER TABLE "Subscription" ADD COLUMN "lastGatewayEventAt" TIMESTAMP(3);
+ALTER TABLE "Subscription"
+  ADD COLUMN "lastGatewayStatusEventAt" TIMESTAMP(3),
+  ADD COLUMN "lastGatewayPaymentEventAt" TIMESTAMP(3);
 
 CREATE TABLE "SubscriptionLifecycleAction" (
   "id" TEXT NOT NULL,

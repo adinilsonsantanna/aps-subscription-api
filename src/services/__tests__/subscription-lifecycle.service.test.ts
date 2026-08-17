@@ -4,7 +4,7 @@ import { Prisma } from "@prisma/client";
 import { LifecycleError, SubscriptionLifecycleService } from "../SubscriptionLifecycleService";
 
 function setup(overrides: Record<string, unknown> = {}) {
-  const subscription = { id: "aps-1", gateway: "stripe", externalId: "sub_123", shopifyContractId: null, status: "active", lastPaymentStatus: "succeeded", lastGatewayEventAt: null, shop: { domain: "known.myshopify.com" }, ...overrides };
+  const subscription = { id: "aps-1", gateway: "stripe", externalId: "sub_123", shopifyContractId: null, status: "active", lastPaymentStatus: "succeeded", lastGatewayStatusEventAt: null, lastGatewayPaymentEventAt: null, shop: { domain: "known.myshopify.com" }, ...overrides };
   const actions: any[] = [];
   const history: any[] = [];
   const prisma: any = {
