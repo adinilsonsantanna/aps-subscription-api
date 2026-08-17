@@ -56,6 +56,18 @@ export class StripeSubscriptionService {
     return stripe.subscriptions.cancel(subscriptionId);
   }
 
+  async pause(subscriptionId: string) {
+    return stripe.subscriptions.update(subscriptionId, {
+      pause_collection: { behavior: "void" },
+    });
+  }
+
+  async resume(subscriptionId: string) {
+    return stripe.subscriptions.update(subscriptionId, {
+      pause_collection: "",
+    });
+  }
+
   async retrieve(subscriptionId: string) {
     return stripe.subscriptions.retrieve(subscriptionId);
   }

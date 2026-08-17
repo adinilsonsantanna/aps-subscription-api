@@ -7,7 +7,9 @@ import {
   contractPatchFromPayload,
   contractUpdatePatch,
   newShopifySubscriptionData,
+  shouldApplyShopifyContractEvent,
 } from "../shopify-event.repository";
+
 import { ShopifyEventIngestionService } from "../shopify-event.service";
 import {
   IncomingShopifyEvent,
@@ -17,6 +19,21 @@ import {
   contractIdFromPayload,
   optionalString,
 } from "../shopify-event.types";
+
+test("cancelled Shopify contract rejects an older PAUSED revision", () => {
+  assert.equal(shouldApplyShopifyContractEvent("cancelled", "gid://shopify/SubscriptionContractRevision/20", "PAUSED", "gid://shopify/SubscriptionContractRevision/19"), false);
+  assert.equal(shouldApplyShopifyContractEvent("failed", "20", "ACTIVE", "21"), false);
+});
+
+test("Shopify revision ID rejects out-of-order non-terminal updates", () => {
+  assert.equal(shouldApplyShopifyContractEvent("paused", "revision-20", "ACTIVE", "revision-19"), false);
+  assert.equal(shouldApplyShopifyContractEvent("paused", "revision-20", "ACTIVE", "revision-21"), true);
+});
+
+test("Shopify event without revision cannot make an unordered reversible transition", () => {
+  assert.equal(shouldApplyShopifyContractEvent("active", null, "PAUSED"), false);
+  assert.equal(shouldApplyShopifyContractEvent("active", null, "CANCELLED"), true);
+});
 
 class MemoryRepository implements ShopifyEventRepository {
   shops = new Map<string, { id: string; isActive: boolean; shopifyShopId?: string }>([["known.myshopify.com", { id: "shop-1", isActive: true }]]);
@@ -214,7 +231,7 @@ test("keeps a billing attempt that arrives before contract creation", async () =
   assert.equal(repository.contracts.has(contractId), true);
   assert.equal(repository.contracts.get(contractId)?.status, undefined);
   assert.equal(repository.attempts.length, 1);
-  assert.equal(repository.attempts[0]?.status, "SUCCEEDED");
+  assert.equal(repository.attempts[0]?.status, "succeeded");
 });
 
 test("does not duplicate a billing attempt when a failed webhook is retried", async () => {
@@ -248,7 +265,7 @@ test("records a successful billing attempt and its Shopify order", async () => {
     admin_graphql_api_order_id: "gid://shopify/Order/1",
   }));
 
-  assert.equal(repository.attempts[0]?.status, "SUCCEEDED");
+  assert.equal(repository.attempts[0]?.status, "succeeded");
   assert.equal(repository.attempts[0]?.shopifyOrderId, "gid://shopify/Order/1");
 });
 
@@ -265,7 +282,7 @@ test("records billing failure details without scheduling a retry", async () => {
     error_message: "Payment failed",
   }));
 
-  assert.equal(repository.attempts[0]?.status, "FAILED");
+  assert.equal(repository.attempts[0]?.status, "failed");
   assert.equal(repository.attempts[0]?.errorCode, "CARD_DECLINED");
 });
 
@@ -322,7 +339,7 @@ test("records a challenged billing attempt without cancelling the contract", asy
     next_action_url: "https://example.test/authenticate",
   }));
 
-  assert.equal(repository.attempts[0]?.status, "CHALLENGED");
+  assert.equal(repository.attempts[0]?.status, "challenged");
   assert.equal(repository.attempts[0]?.nextActionUrl, "https://example.test/authenticate");
   assert.equal(repository.contracts.get(contractId)?.status, "active");
 });
