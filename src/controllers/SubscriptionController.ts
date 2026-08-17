@@ -8,7 +8,7 @@ const prisma = new PrismaClient();
 
 
 export class SubscriptionController {
-    private lifecycle = new SubscriptionLifecycleService();
+    constructor(private lifecycle = new SubscriptionLifecycleService()) {}
 
     async lifecycleAction(req: Request, res: Response) {
         try {
