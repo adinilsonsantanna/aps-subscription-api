@@ -50,7 +50,39 @@ export function safeStripePatch(subscription: Pick<Subscription, "status" | "las
 }
 
 export class StripeEventProcessor {
-  constructor(private readonly prisma = new PrismaClient(), private readonly recurringOrders: RecurringShopifyOrderCreator = new AppShopifyRecurringOrderService()) {}
+  constructor(
+    private readonly prisma = new PrismaClient(),
+    private readonly recurringOrders: RecurringShopifyOrderCreator = new AppShopifyRecurringOrderService(),
+    private readonly now = () => new Date(),
+    private readonly claimLeaseMs = 60_000,
+  ) {}
+
+  private async claimInvoiceOrder(subscriptionId: string, invoice: Stripe.Invoice) {
+    const claimedAt = this.now();
+    const data = {
+      subscriptionId,
+      gatewayOrderId: invoice.id,
+      amount: invoice.amount_paid / 100,
+      currencyCode: invoice.currency ? invoice.currency.toUpperCase() : null,
+      status: "processing",
+      shopifyOrderClaimedAt: claimedAt,
+    };
+    try {
+      return { order: await this.prisma.subscriptionOrder.create({ data }), ownsClaim: true };
+    } catch (error) {
+      if ((error as { code?: string }).code !== "P2002") throw error;
+    }
+    let order = await this.prisma.subscriptionOrder.findUnique({ where: { subscriptionId_gatewayOrderId: { subscriptionId, gatewayOrderId: invoice.id } } });
+    if (!order) throw new Error("Invoice order claim disappeared");
+    if (order.shopifyOrderId) return { order, ownsClaim: false };
+    const expiredBefore = new Date(claimedAt.getTime() - this.claimLeaseMs);
+    const takeover = await this.prisma.subscriptionOrder.updateMany({ where: { id: order.id, shopifyOrderId: null, status: "processing", OR: [{ shopifyOrderClaimedAt: null }, { shopifyOrderClaimedAt: { lte: expiredBefore } }] }, data: { shopifyOrderClaimedAt: claimedAt } });
+    if (takeover.count === 1) {
+      order = { ...order, shopifyOrderClaimedAt: claimedAt };
+      return { order, ownsClaim: true };
+    }
+    return { order, ownsClaim: false };
+  }
 
   async process(event: Stripe.Event) {
     const reconciliation = reconciliationForStripeEvent(event);
@@ -65,12 +97,24 @@ export class StripeEventProcessor {
 
     const patch: Prisma.SubscriptionUpdateInput = safeStripePatch(subscription, event, reconciliation);
     const invoice = INVOICE_EVENTS.has(event.type) ? event.data.object as Stripe.Invoice : undefined;
-    const existingOrder = invoice?.id ? await this.prisma.subscriptionOrder.findFirst({ where: { gatewayOrderId: invoice.id, subscriptionId: subscription.id } }) : null;
+    let existingOrder = invoice?.id ? await this.prisma.subscriptionOrder.findUnique({ where: { subscriptionId_gatewayOrderId: { subscriptionId: subscription.id, gatewayOrderId: invoice.id } } }) : null;
     let shopifyOrderId = existingOrder?.shopifyOrderId ?? undefined;
     if (event.type === "invoice.payment_succeeded" && invoice) {
-      if (!invoice.amount_paid || invoice.amount_paid <= 0) throw new Error("Successful Stripe invoice has no paid amount");
+      if (!Number.isFinite(invoice.amount_paid) || invoice.amount_paid < 0) throw new Error("Successful Stripe invoice has an invalid paid amount");
       const recurring = invoice.billing_reason === "subscription_cycle" || invoice.billing_reason === "subscription_threshold";
-      if (recurring && process.env.ENABLE_LEGACY_SUBSCRIPTION_FLOW === "true" && !shopifyOrderId) shopifyOrderId = await this.recurringOrders.create(subscription, invoice);
+      if (!existingOrder) {
+        const claim = await this.claimInvoiceOrder(subscription.id, invoice);
+        existingOrder = claim.order;
+        if (recurring && process.env.ENABLE_LEGACY_SUBSCRIPTION_FLOW === "true" && !shopifyOrderId) {
+          if (!claim.ownsClaim) throw new Error("Stripe invoice fulfillment is already in progress");
+          shopifyOrderId = await this.recurringOrders.create(subscription, invoice);
+        }
+      } else if (recurring && process.env.ENABLE_LEGACY_SUBSCRIPTION_FLOW === "true" && !shopifyOrderId) {
+        const claim = await this.claimInvoiceOrder(subscription.id, invoice);
+        existingOrder = claim.order;
+        if (!claim.ownsClaim) throw new Error("Stripe invoice fulfillment is already in progress");
+        shopifyOrderId = await this.recurringOrders.create(subscription, invoice);
+      }
       const billingAt = nextBillingAt(invoice);
       if (billingAt && "lastPaymentStatus" in patch && (!subscription.nextBillingAt || billingAt > subscription.nextBillingAt)) patch.nextBillingAt = billingAt;
     }
@@ -78,7 +122,7 @@ export class StripeEventProcessor {
     await this.prisma.$transaction(async (tx) => {
       if (Object.keys(patch).length) await tx.subscription.update({ where: { id: subscription.id }, data: patch });
       if (invoice?.id && reconciliation.paymentStatus) {
-        const orderData = { shopifyOrderId, amount: event.type === "invoice.payment_succeeded" ? invoice.amount_paid / 100 : 0, currency: invoice.currency ? invoice.currency.toUpperCase() : null, status: event.type === "invoice.payment_succeeded" ? "paid" : reconciliation.paymentStatus, processedAt: new Date() };
+        const orderData = { shopifyOrderId, amount: event.type === "invoice.payment_succeeded" ? invoice.amount_paid / 100 : 0, currencyCode: invoice.currency ? invoice.currency.toUpperCase() : null, status: event.type === "invoice.payment_succeeded" ? "paid" : reconciliation.paymentStatus, processedAt: this.now() };
         if (existingOrder) await tx.subscriptionOrder.update({ where: { id: existingOrder.id }, data: orderData });
         else await tx.subscriptionOrder.create({ data: { subscriptionId: subscription.id, gatewayOrderId: invoice.id, ...orderData } });
       }

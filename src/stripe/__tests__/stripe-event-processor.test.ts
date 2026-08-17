@@ -40,6 +40,9 @@ function processorContext(gateway = "stripe") {
   const subscription: any = { ...state(), gateway, externalId: "sub_historical", stripeCustomerId: "cus_historical", stripePaymentMethodId: "pm_historical", shopifyVariantId: "123", nextBillingAt: null, shop: { domain: "known.myshopify.com" } };
   let shopifyCalls = 0;
   let failShopify = false;
+  const createdShopifyInvoices = new Set<string>();
+  let currentTime = new Date("2026-08-17T12:00:00.000Z");
+  let failOrderUpdate = false;
   const prisma: any = {
     subscription: {
       findFirst: async ({ where }: any) => where.gateway === subscription.gateway && where.externalId === subscription.externalId ? subscription : null,
@@ -51,15 +54,17 @@ function processorContext(gateway = "stripe") {
       update: async ({ where, data }: any) => { events.set(where.eventId, { processed: data.processed }); },
     },
     subscriptionOrder: {
-      findFirst: async ({ where }: any) => orders.find((order) => order.gatewayOrderId === where.gatewayOrderId && order.subscriptionId === where.subscriptionId) || null,
-      create: async ({ data }: any) => { const order = { id: `order-${orders.length + 1}`, ...data }; orders.push(order); return order; },
-      update: async ({ where, data }: any) => { const order = orders.find((candidate) => candidate.id === where.id); Object.assign(order, data); return order; },
+      findUnique: async ({ where }: any) => { const key = where.subscriptionId_gatewayOrderId; return orders.find((order) => order.gatewayOrderId === key.gatewayOrderId && order.subscriptionId === key.subscriptionId) || null; },
+      create: async ({ data }: any) => { if (orders.some((order) => order.gatewayOrderId === data.gatewayOrderId && order.subscriptionId === data.subscriptionId)) throw { code: "P2002" }; const order = { id: `order-${orders.length + 1}`, shopifyOrderId: null, ...data }; orders.push(order); return order; },
+      updateMany: async ({ where, data }: any) => { const order = orders.find((candidate) => candidate.id === where.id && !candidate.shopifyOrderId && candidate.status === where.status); if (!order || (order.shopifyOrderClaimedAt && order.shopifyOrderClaimedAt > where.OR[1].shopifyOrderClaimedAt.lte)) return { count: 0 }; Object.assign(order, data); return { count: 1 }; },
+      update: async ({ where, data }: any) => { if (failOrderUpdate) { failOrderUpdate = false; throw new Error("prisma write failed"); } const order = orders.find((candidate) => candidate.id === where.id); Object.assign(order, data); return order; },
     },
     subscriptionStatusHistory: { upsert: async () => ({}) },
     $transaction: async (callback: any) => callback(prisma),
   };
-  const recurring = { create: async () => { shopifyCalls += 1; if (failShopify) throw new Error("shopify unavailable"); return "gid://shopify/Order/999"; } };
-  return { processor: new StripeEventProcessor(prisma, recurring), subscription, orders, events, shopifyCalls: () => shopifyCalls, failShopify: () => { failShopify = true; } };
+  const recurring = { create: async (_subscription: unknown, invoice: Stripe.Invoice) => { if (failShopify) throw new Error("shopify unavailable"); if (!createdShopifyInvoices.has(invoice.id)) { createdShopifyInvoices.add(invoice.id); shopifyCalls += 1; } return "gid://shopify/Order/999"; } };
+  const processor = new StripeEventProcessor(prisma, recurring, () => new Date(currentTime), 1_000);
+  return { processor, subscription, orders, events, shopifyCalls: () => shopifyCalls, failShopify: () => { failShopify = true; }, failOrderUpdate: () => { failOrderUpdate = true; }, advance: (ms: number) => { currentTime = new Date(currentTime.getTime() + ms); } };
 }
 
 test("succeeded stores the real amount, currency, payment status and next billing date", async () => {
@@ -67,7 +72,7 @@ test("succeeded stores the real amount, currency, payment status and next billin
   const context = processorContext();
   await context.processor.process(invoiceEvent("invoice.payment_succeeded", "in_paid"));
   assert.equal(context.orders[0].amount, 129.9);
-  assert.equal(context.orders[0].currency, "BRL");
+  assert.equal(context.orders[0].currencyCode, "BRL");
   assert.equal(context.orders[0].status, "paid");
   assert.equal(context.subscription.lastPaymentStatus, "succeeded");
   assert.equal(context.subscription.nextBillingAt.toISOString(), new Date(900_000).toISOString());
@@ -95,7 +100,9 @@ test("Shopify order failure leaves the webhook unfinished for retry", async () =
   const value = invoiceEvent("invoice.payment_succeeded", "in_retry");
   await assert.rejects(context.processor.process(value), /shopify unavailable/);
   assert.equal(context.events.get(value.id)?.processed, false);
-  assert.equal(context.orders.length, 0);
+  assert.equal(context.orders.length, 1);
+  assert.equal(context.orders[0].status, "processing");
+  assert.equal(context.orders[0].shopifyOrderId, null);
 });
 
 test("disabled historical flow and failed invoices never create Shopify orders", async () => {
@@ -122,4 +129,51 @@ test("payment action required remains challenged and Shopify subscriptions never
   assert.equal(result.ignored, true);
   assert.equal(shopify.orders.length, 0);
   assert.equal(shopify.shopifyCalls(), 0);
+});
+
+test("zero-value succeeded invoice is completed with amount zero and its real currency", async () => {
+  process.env.ENABLE_LEGACY_SUBSCRIPTION_FLOW = "true";
+  const context = processorContext();
+  const value = invoiceEvent("invoice.payment_succeeded", "in_zero", { amount_paid: 0, currency: "usd" });
+  const result = await context.processor.process(value);
+  assert.equal(result.processed, true);
+  assert.equal(context.orders[0].amount, 0);
+  assert.equal(context.orders[0].currencyCode, "USD");
+  assert.equal(context.orders[0].status, "paid");
+  assert.equal(context.events.get(value.id)?.processed, true);
+  assert.equal(context.shopifyCalls(), 1);
+});
+
+test("two concurrent Stripe deliveries for one invoice make only one external request", async () => {
+  process.env.ENABLE_LEGACY_SUBSCRIPTION_FLOW = "true";
+  const context = processorContext();
+  const first = invoiceEvent("invoice.payment_succeeded", "in_concurrent");
+  const second = { ...first, id: "evt_concurrent_second" };
+  const results = await Promise.allSettled([context.processor.process(first), context.processor.process(second)]);
+  assert.equal(context.shopifyCalls(), 1);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(context.orders.length, 1);
+});
+
+test("a different Stripe event for a completed invoice reuses the persisted Shopify order", async () => {
+  process.env.ENABLE_LEGACY_SUBSCRIPTION_FLOW = "true";
+  const context = processorContext();
+  const first = invoiceEvent("invoice.payment_succeeded", "in_same_invoice");
+  await context.processor.process(first);
+  await context.processor.process({ ...first, id: "evt_same_invoice_redelivery", created: first.created + 1 });
+  assert.equal(context.shopifyCalls(), 1);
+  assert.equal(context.orders.length, 1);
+});
+
+test("Prisma failure after Shopify response is recovered without creating another Shopify order", async () => {
+  process.env.ENABLE_LEGACY_SUBSCRIPTION_FLOW = "true";
+  const context = processorContext();
+  const first = invoiceEvent("invoice.payment_succeeded", "in_prisma_recovery");
+  context.failOrderUpdate();
+  await assert.rejects(context.processor.process(first), /prisma write failed/);
+  context.advance(1_001);
+  await context.processor.process({ ...first, id: "evt_prisma_recovery_retry", created: first.created + 1 });
+  assert.equal(context.shopifyCalls(), 1);
+  assert.equal(context.orders[0].shopifyOrderId, "gid://shopify/Order/999");
+  assert.equal(context.orders[0].status, "paid");
 });

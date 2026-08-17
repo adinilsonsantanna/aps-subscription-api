@@ -19,7 +19,7 @@ export class AppShopifyRecurringOrderService implements RecurringShopifyOrderCre
   async create(subscription: HistoricalStripeSubscription, invoice: Stripe.Invoice): Promise<string> {
     if (!subscription.shop?.domain) throw new Error("Subscription shop is unavailable");
     if (!subscription.shopifyVariantId) throw new Error("Subscription Shopify variant is unavailable");
-    if (!invoice.id || !invoice.amount_paid || invoice.amount_paid <= 0) throw new Error("Successful Stripe invoice has no paid amount");
+    if (!invoice.id || !Number.isFinite(invoice.amount_paid) || invoice.amount_paid < 0) throw new Error("Successful Stripe invoice has an invalid paid amount");
 
     const baseUrl = process.env.SHOPIFY_APP_URL;
     const apiKey = process.env.API_KEY;
@@ -46,7 +46,7 @@ export class AppShopifyRecurringOrderService implements RecurringShopifyOrderCre
       customer: { toUpsert: { email, firstName, lastName, phone } },
       note: `APS Subscription ${subscription.id} - Recorrência Stripe - Invoice ${invoice.id}`,
       customAttributes: [{ key: "APS Subscription ID", value: subscription.id }, { key: "Stripe Invoice ID", value: invoice.id }, { key: "Stripe Subscription ID", value: subscription.externalId || "" }],
-      processedAt: invoice.status_transitions?.paid_at ? new Date(invoice.status_transitions.paid_at * 1000).toISOString() : new Date().toISOString(),
+      processedAt: new Date((invoice.status_transitions?.paid_at || invoice.created || 0) * 1000).toISOString(),
       transactions: [{ kind: "SALE", status: "SUCCESS", amountSet: { shopMoney: { amount, currencyCode: currency } } }],
       ...(postalAddress ? { shippingAddress: postalAddress, billingAddress: postalAddress } : {}),
     };

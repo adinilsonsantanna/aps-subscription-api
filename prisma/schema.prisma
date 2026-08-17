@@ -106,17 +106,20 @@ model SubscriptionStatusHistory {
 }
 
 model SubscriptionOrder {
-  id              String       @id @default(cuid())
-  subscriptionId  String
-  subscription    Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
-  shopifyOrderId  String?
-  shopifyOrderKey String?      @unique
-  gatewayOrderId  String?
-  amount          Decimal      @db.Decimal(10, 2)
-  currency        String?
-  status          String
-  processedAt     DateTime?
-  createdAt       DateTime     @default(now())
+  id                    String       @id @default(cuid())
+  subscriptionId        String
+  subscription          Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  shopifyOrderId        String?
+  shopifyOrderKey       String?      @unique
+  gatewayOrderId        String?
+  amount                Decimal      @db.Decimal(10, 2)
+  currencyCode          String?
+  status                String
+  shopifyOrderClaimedAt DateTime?
+  processedAt           DateTime?
+  createdAt             DateTime     @default(now())
+
+  @@unique([subscriptionId, gatewayOrderId])
 }
 
 model WebhookEvent {

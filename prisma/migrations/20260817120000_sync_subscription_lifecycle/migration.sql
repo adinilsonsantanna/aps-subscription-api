@@ -2,7 +2,24 @@ ALTER TABLE "Subscription"
   ADD COLUMN "lastGatewayStatusEventAt" TIMESTAMP(3),
   ADD COLUMN "lastGatewayPaymentEventAt" TIMESTAMP(3);
 
-ALTER TABLE "SubscriptionOrder" ADD COLUMN "currency" TEXT;
+ALTER TABLE "SubscriptionOrder"
+  ADD COLUMN "currencyCode" TEXT,
+  ADD COLUMN "shopifyOrderClaimedAt" TIMESTAMP(3);
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM "SubscriptionOrder"
+    WHERE "gatewayOrderId" IS NOT NULL
+    GROUP BY "subscriptionId", "gatewayOrderId"
+    HAVING COUNT(*) > 1
+  ) THEN
+    RAISE EXCEPTION 'Cannot add SubscriptionOrder invoice uniqueness: historical duplicates exist';
+  END IF;
+END $$;
+
+CREATE UNIQUE INDEX "SubscriptionOrder_subscriptionId_gatewayOrderId_key"
+  ON "SubscriptionOrder"("subscriptionId", "gatewayOrderId");
 
 CREATE TABLE "SubscriptionLifecycleAction" (
   "id" TEXT NOT NULL,
