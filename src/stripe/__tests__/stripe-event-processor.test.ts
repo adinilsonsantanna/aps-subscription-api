@@ -56,7 +56,16 @@ function processorContext(gateway = "stripe") {
     subscriptionOrder: {
       findUnique: async ({ where }: any) => { const key = where.subscriptionId_gatewayOrderId; return orders.find((order) => order.gatewayOrderId === key.gatewayOrderId && order.subscriptionId === key.subscriptionId) || null; },
       create: async ({ data }: any) => { if (orders.some((order) => order.gatewayOrderId === data.gatewayOrderId && order.subscriptionId === data.subscriptionId)) throw { code: "P2002" }; const order = { id: `order-${orders.length + 1}`, shopifyOrderId: null, ...data }; orders.push(order); return order; },
-      updateMany: async ({ where, data }: any) => { const order = orders.find((candidate) => candidate.id === where.id && !candidate.shopifyOrderId && candidate.status === where.status); if (!order || (order.shopifyOrderClaimedAt && order.shopifyOrderClaimedAt > where.OR[1].shopifyOrderClaimedAt.lte)) return { count: 0 }; Object.assign(order, data); return { count: 1 }; },
+      updateMany: async ({ where, data }: any) => {
+        const order = orders.find((candidate) => candidate.id === where.id && !candidate.shopifyOrderId);
+        if (!order) return { count: 0 };
+        const retryablePayment = ["failed", "challenged"].includes(order.status);
+        const leaseLimit = where.OR[1].OR[1].shopifyOrderClaimedAt.lte;
+        const expiredProcessing = order.status === "processing" && (!order.shopifyOrderClaimedAt || order.shopifyOrderClaimedAt <= leaseLimit);
+        if (!retryablePayment && !expiredProcessing) return { count: 0 };
+        Object.assign(order, data);
+        return { count: 1 };
+      },
       update: async ({ where, data }: any) => { if (failOrderUpdate) { failOrderUpdate = false; throw new Error("prisma write failed"); } const order = orders.find((candidate) => candidate.id === where.id); Object.assign(order, data); return order; },
     },
     subscriptionStatusHistory: { upsert: async () => ({}) },
@@ -176,4 +185,54 @@ test("Prisma failure after Shopify response is recovered without creating anothe
   assert.equal(context.shopifyCalls(), 1);
   assert.equal(context.orders[0].shopifyOrderId, "gid://shopify/Order/999");
   assert.equal(context.orders[0].status, "paid");
+});
+
+test("payment failed followed by succeeded for the same invoice creates one Shopify order", async () => {
+  process.env.ENABLE_LEGACY_SUBSCRIPTION_FLOW = "true";
+  const context = processorContext();
+  await context.processor.process(invoiceEvent("invoice.payment_failed", "in_failed_then_paid"));
+  const succeeded = invoiceEvent("invoice.payment_succeeded", "in_failed_then_paid", { amount_paid: 4590, currency: "usd" });
+  await context.processor.process({ ...succeeded, created: succeeded.created + 1 });
+  assert.equal(context.shopifyCalls(), 1);
+  assert.equal(context.orders.length, 1);
+  assert.equal(context.orders[0].status, "paid");
+  assert.equal(context.orders[0].amount, 45.9);
+  assert.equal(context.orders[0].currencyCode, "USD");
+});
+
+test("payment action required followed by succeeded for the same invoice creates one Shopify order", async () => {
+  process.env.ENABLE_LEGACY_SUBSCRIPTION_FLOW = "true";
+  const context = processorContext();
+  await context.processor.process(invoiceEvent("invoice.payment_action_required", "in_challenged_then_paid"));
+  const succeeded = invoiceEvent("invoice.payment_succeeded", "in_challenged_then_paid");
+  await context.processor.process({ ...succeeded, created: succeeded.created + 1 });
+  assert.equal(context.shopifyCalls(), 1);
+  assert.equal(context.orders[0].status, "paid");
+  assert.equal(context.orders[0].shopifyOrderId, "gid://shopify/Order/999");
+});
+
+test("two concurrent succeeded events after failed allow only one fulfillment winner", async () => {
+  process.env.ENABLE_LEGACY_SUBSCRIPTION_FLOW = "true";
+  const context = processorContext();
+  await context.processor.process(invoiceEvent("invoice.payment_failed", "in_failed_concurrent"));
+  const succeeded = invoiceEvent("invoice.payment_succeeded", "in_failed_concurrent");
+  const results = await Promise.allSettled([
+    context.processor.process({ ...succeeded, id: "evt_failed_concurrent_1", created: succeeded.created + 1 }),
+    context.processor.process({ ...succeeded, id: "evt_failed_concurrent_2", created: succeeded.created + 2 }),
+  ]);
+  assert.equal(context.shopifyCalls(), 1);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(context.orders[0].status, "paid");
+});
+
+test("redelivery after failed-to-paid completion never repeats orderCreate", async () => {
+  process.env.ENABLE_LEGACY_SUBSCRIPTION_FLOW = "true";
+  const context = processorContext();
+  await context.processor.process(invoiceEvent("invoice.payment_failed", "in_completed_redelivery"));
+  const succeeded = { ...invoiceEvent("invoice.payment_succeeded", "in_completed_redelivery"), created: 501 };
+  await context.processor.process(succeeded);
+  await context.processor.process(succeeded);
+  await context.processor.process({ ...succeeded, id: "evt_completed_redelivery_other", created: 502 });
+  assert.equal(context.shopifyCalls(), 1);
+  assert.equal(context.orders[0].shopifyOrderId, "gid://shopify/Order/999");
 });

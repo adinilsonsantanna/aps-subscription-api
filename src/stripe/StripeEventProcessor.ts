@@ -76,9 +76,20 @@ export class StripeEventProcessor {
     if (!order) throw new Error("Invoice order claim disappeared");
     if (order.shopifyOrderId) return { order, ownsClaim: false };
     const expiredBefore = new Date(claimedAt.getTime() - this.claimLeaseMs);
-    const takeover = await this.prisma.subscriptionOrder.updateMany({ where: { id: order.id, shopifyOrderId: null, status: "processing", OR: [{ shopifyOrderClaimedAt: null }, { shopifyOrderClaimedAt: { lte: expiredBefore } }] }, data: { shopifyOrderClaimedAt: claimedAt } });
+    const claimData = { status: "processing", shopifyOrderClaimedAt: claimedAt, amount: invoice.amount_paid / 100, currencyCode: invoice.currency ? invoice.currency.toUpperCase() : null };
+    const takeover = await this.prisma.subscriptionOrder.updateMany({
+      where: {
+        id: order.id,
+        shopifyOrderId: null,
+        OR: [
+          { status: { in: ["failed", "challenged"] } },
+          { status: "processing", OR: [{ shopifyOrderClaimedAt: null }, { shopifyOrderClaimedAt: { lte: expiredBefore } }] },
+        ],
+      },
+      data: claimData,
+    });
     if (takeover.count === 1) {
-      order = { ...order, shopifyOrderClaimedAt: claimedAt };
+      order = { ...order, ...claimData, amount: new Prisma.Decimal(claimData.amount) };
       return { order, ownsClaim: true };
     }
     return { order, ownsClaim: false };
