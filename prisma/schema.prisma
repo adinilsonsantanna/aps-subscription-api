@@ -19,6 +19,10 @@ model Shop {
   subscriptions   Subscription[]
   webhooks        WebhookEvent[]
   billingAttempts SubscriptionBillingAttempt[]
+  retrySettings   BillingRetrySettings?
+  retryCycles     BillingRetryCycle[]
+  retryJobs       BillingRetryJob[]
+  notifications   NotificationOutbox[]
   createdAt       DateTime                     @default(now())
   updatedAt       DateTime                     @updatedAt
 }
@@ -54,11 +58,127 @@ model Subscription {
   billingAttempts           SubscriptionBillingAttempt[]
   lifecycleActions          SubscriptionLifecycleAction[]
   statusHistory             SubscriptionStatusHistory[]
+  retryCycles               BillingRetryCycle[]
+  retryJobs                 BillingRetryJob[]
   createdAt                 DateTime                      @default(now())
   updatedAt                 DateTime                      @updatedAt
 
   @@unique([shopId, shopifyContractId])
   @@index([shopifyContractId])
+}
+
+enum RetryKind {
+  INVENTORY
+  PAYMENT
+}
+
+enum RetryJobStatus {
+  PENDING
+  CLAIMED
+  SUCCEEDED
+  FAILED
+  EXHAUSTED
+  SKIPPED
+  UNCERTAIN
+}
+
+enum RetryFailureAction {
+  PAUSE_AND_NOTIFY
+  CANCEL_AND_NOTIFY
+  SKIP_AND_NOTIFY
+}
+
+enum TeamNotificationFrequency {
+  IMMEDIATELY
+  DAILY_SUMMARY
+  WEEKLY_SUMMARY
+  NEVER
+}
+
+model BillingRetrySettings {
+  shopId                    String                    @id
+  shop                      Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  paymentRetryAttempts      Int                       @default(3)
+  paymentRetryDays          Int                       @default(2)
+  paymentFailureAction      RetryFailureAction        @default(PAUSE_AND_NOTIFY)
+  inventoryRetryAttempts    Int                       @default(5)
+  inventoryRetryDays        Int                       @default(1)
+  inventoryFailureAction    RetryFailureAction        @default(SKIP_AND_NOTIFY)
+  teamNotificationFrequency TeamNotificationFrequency @default(WEEKLY_SUMMARY)
+  createdAt                 DateTime                  @default(now())
+  updatedAt                 DateTime                  @updatedAt
+}
+
+model BillingRetryCycle {
+  id                  String               @id @default(cuid())
+  shopId              String
+  shop                Shop                 @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  subscriptionId      String
+  subscription        Subscription         @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  billingCycleAt      DateTime
+  status              String               @default("pending")
+  finalAction         RetryFailureAction?
+  finalActionAt       DateTime?
+  nextBillingAdvanced Boolean              @default(false)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  jobs                BillingRetryJob[]
+  notifications       NotificationOutbox[]
+
+  @@unique([subscriptionId, billingCycleAt])
+  @@index([shopId, status])
+}
+
+model BillingRetryJob {
+  id                String              @id @default(cuid())
+  shopId            String
+  shop              Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  subscriptionId    String
+  subscription      Subscription        @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  cycleId           String
+  cycle             BillingRetryCycle   @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  kind              RetryKind
+  attemptNumber     Int
+  maxRetries        Int
+  status            RetryJobStatus      @default(PENDING)
+  scheduledAt       DateTime
+  claimedAt         DateTime?
+  leaseExpiresAt    DateTime?
+  completedAt       DateTime?
+  idempotencyKey    String              @unique
+  errorCode         String?
+  errorMessage      String?
+  inventoryResult   Json?
+  externalAttemptId String?
+  finalAction       RetryFailureAction?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  @@unique([cycleId, kind, attemptNumber])
+  @@index([status, scheduledAt])
+  @@index([status, leaseExpiresAt])
+  @@index([subscriptionId, kind, status])
+}
+
+model NotificationOutbox {
+  id             String                    @id @default(cuid())
+  shopId         String
+  shop           Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  cycleId        String
+  cycle          BillingRetryCycle         @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  idempotencyKey String                    @unique
+  frequency      TeamNotificationFrequency
+  eventType      String
+  payload        Json
+  status         String                    @default("pending")
+  availableAt    DateTime
+  sentAt         DateTime?
+  errorMessage   String?
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+
+  @@index([status, availableAt])
+  @@index([shopId, frequency, availableAt])
 }
 
 model SubscriptionLifecycleAction {

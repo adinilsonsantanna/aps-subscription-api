@@ -5,6 +5,8 @@ import webhookRoutes from "./webhooks.routes";
 import healthRoutes from "./health.routes";
 import { apiAuth } from "../middlewares/apiAuth";
 import shopifyEventRoutes from "./shopify-events.routes";
+import retrySettingsRoutes from "./retry-settings.routes";
+import cronRoutes from "./cron.routes";
 
 const router = Router();
 
@@ -17,6 +19,8 @@ router.use("/health", healthRoutes);
 router.use("/api/shop", apiAuth, json(), installRoutes);
 router.use("/api/subscriptions", apiAuth, json(), subscriptionRoutes);
 router.use("/api/shopify", apiAuth, json({ limit: "1mb" }), shopifyEventRoutes);
+router.use("/api/retry-settings", apiAuth, json({ limit: "32kb" }), retrySettingsRoutes);
+router.use("/api/cron", cronRoutes);
 
 // Webhooks sem JSON global
 router.use("/api/webhooks", webhookRoutes);
