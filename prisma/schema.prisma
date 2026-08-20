@@ -110,49 +110,60 @@ model BillingRetrySettings {
 }
 
 model BillingRetryCycle {
-  id                  String               @id @default(cuid())
-  shopId              String
-  shop                Shop                 @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  subscriptionId      String
-  subscription        Subscription         @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
-  billingCycleAt      DateTime
-  status              String               @default("pending")
-  finalAction         RetryFailureAction?
-  finalActionAt       DateTime?
-  nextBillingAdvanced Boolean              @default(false)
-  createdAt           DateTime             @default(now())
-  updatedAt           DateTime             @updatedAt
-  jobs                BillingRetryJob[]
-  notifications       NotificationOutbox[]
+  id                        String               @id @default(cuid())
+  shopId                    String
+  shop                      Shop                 @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  subscriptionId            String
+  subscription              Subscription         @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  billingCycleAt            DateTime
+  status                    String               @default("pending")
+  finalAction               RetryFailureAction?
+  finalActionAt             DateTime?
+  finalActionStatus         String               @default("none")
+  finalActionClaimedAt      DateTime?
+  finalActionLeaseExpiresAt DateTime?
+  finalActionError          String?
+  nextBillingAdvanced       Boolean              @default(false)
+  createdAt                 DateTime             @default(now())
+  updatedAt                 DateTime             @updatedAt
+  jobs                      BillingRetryJob[]
+  notifications             NotificationOutbox[]
 
   @@unique([subscriptionId, billingCycleAt])
   @@index([shopId, status])
+  @@index([finalActionStatus, finalActionLeaseExpiresAt])
 }
 
 model BillingRetryJob {
-  id                String              @id @default(cuid())
-  shopId            String
-  shop              Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  subscriptionId    String
-  subscription      Subscription        @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
-  cycleId           String
-  cycle             BillingRetryCycle   @relation(fields: [cycleId], references: [id], onDelete: Cascade)
-  kind              RetryKind
-  attemptNumber     Int
-  maxRetries        Int
-  status            RetryJobStatus      @default(PENDING)
-  scheduledAt       DateTime
-  claimedAt         DateTime?
-  leaseExpiresAt    DateTime?
-  completedAt       DateTime?
-  idempotencyKey    String              @unique
-  errorCode         String?
-  errorMessage      String?
-  inventoryResult   Json?
-  externalAttemptId String?
-  finalAction       RetryFailureAction?
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
+  id                       String              @id @default(cuid())
+  shopId                   String
+  shop                     Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  subscriptionId           String
+  subscription             Subscription        @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  cycleId                  String
+  cycle                    BillingRetryCycle   @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  kind                     RetryKind
+  attemptNumber            Int
+  maxRetries               Int
+  status                   RetryJobStatus      @default(PENDING)
+  scheduledAt              DateTime
+  claimedAt                DateTime?
+  leaseExpiresAt           DateTime?
+  completedAt              DateTime?
+  idempotencyKey           String              @unique
+  errorCode                String?
+  errorMessage             String?
+  inventoryResult          Json?
+  externalAttemptId        String?
+  externalOrderId          String?
+  reconciliationCount      Int                 @default(0)
+  maxReconciliations       Int                 @default(12)
+  firstUncertainAt         DateTime?
+  lastReconciledAt         DateTime?
+  reconciliationDeadlineAt DateTime?
+  finalAction              RetryFailureAction?
+  createdAt                DateTime            @default(now())
+  updatedAt                DateTime            @updatedAt
 
   @@unique([cycleId, kind, attemptNumber])
   @@index([status, scheduledAt])

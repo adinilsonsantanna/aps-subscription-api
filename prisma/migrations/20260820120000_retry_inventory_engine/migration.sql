@@ -22,23 +22,28 @@ CREATE TABLE "BillingRetrySettings" (
 CREATE TABLE "BillingRetryCycle" (
   "id" TEXT PRIMARY KEY, "shopId" TEXT NOT NULL, "subscriptionId" TEXT NOT NULL, "billingCycleAt" TIMESTAMP(3) NOT NULL,
   "status" TEXT NOT NULL DEFAULT 'pending', "finalAction" "RetryFailureAction", "finalActionAt" TIMESTAMP(3),
+  "finalActionStatus" TEXT NOT NULL DEFAULT 'none', "finalActionClaimedAt" TIMESTAMP(3), "finalActionLeaseExpiresAt" TIMESTAMP(3), "finalActionError" TEXT,
   "nextBillingAdvanced" BOOLEAN NOT NULL DEFAULT false, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL,
   CONSTRAINT "BillingRetryCycle_shopId_fkey" FOREIGN KEY ("shopId") REFERENCES "Shop"("id") ON DELETE CASCADE ON UPDATE CASCADE,
   CONSTRAINT "BillingRetryCycle_subscriptionId_fkey" FOREIGN KEY ("subscriptionId") REFERENCES "Subscription"("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 CREATE UNIQUE INDEX "BillingRetryCycle_subscriptionId_billingCycleAt_key" ON "BillingRetryCycle"("subscriptionId", "billingCycleAt");
 CREATE INDEX "BillingRetryCycle_shopId_status_idx" ON "BillingRetryCycle"("shopId", "status");
+CREATE INDEX "BillingRetryCycle_finalActionStatus_finalActionLeaseExpiresAt_idx" ON "BillingRetryCycle"("finalActionStatus", "finalActionLeaseExpiresAt");
 CREATE TABLE "BillingRetryJob" (
   "id" TEXT PRIMARY KEY, "shopId" TEXT NOT NULL, "subscriptionId" TEXT NOT NULL, "cycleId" TEXT NOT NULL,
   "kind" "RetryKind" NOT NULL, "attemptNumber" INTEGER NOT NULL, "maxRetries" INTEGER NOT NULL,
   "status" "RetryJobStatus" NOT NULL DEFAULT 'PENDING', "scheduledAt" TIMESTAMP(3) NOT NULL, "claimedAt" TIMESTAMP(3),
   "leaseExpiresAt" TIMESTAMP(3), "completedAt" TIMESTAMP(3), "idempotencyKey" TEXT NOT NULL,
-  "errorCode" TEXT, "errorMessage" TEXT, "inventoryResult" JSONB, "externalAttemptId" TEXT,
+  "errorCode" TEXT, "errorMessage" TEXT, "inventoryResult" JSONB, "externalAttemptId" TEXT, "externalOrderId" TEXT,
+  "reconciliationCount" INTEGER NOT NULL DEFAULT 0, "maxReconciliations" INTEGER NOT NULL DEFAULT 12,
+  "firstUncertainAt" TIMESTAMP(3), "lastReconciledAt" TIMESTAMP(3), "reconciliationDeadlineAt" TIMESTAMP(3),
   "finalAction" "RetryFailureAction", "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL,
   CONSTRAINT "BillingRetryJob_shopId_fkey" FOREIGN KEY ("shopId") REFERENCES "Shop"("id") ON DELETE CASCADE ON UPDATE CASCADE,
   CONSTRAINT "BillingRetryJob_subscriptionId_fkey" FOREIGN KEY ("subscriptionId") REFERENCES "Subscription"("id") ON DELETE CASCADE ON UPDATE CASCADE,
   CONSTRAINT "BillingRetryJob_cycleId_fkey" FOREIGN KEY ("cycleId") REFERENCES "BillingRetryCycle"("id") ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT "BillingRetryJob_attempt_check" CHECK ("attemptNumber" >= 0 AND "maxRetries" BETWEEN 0 AND 10)
+  CONSTRAINT "BillingRetryJob_attempt_check" CHECK ("attemptNumber" >= 0 AND "maxRetries" BETWEEN 0 AND 10),
+  CONSTRAINT "BillingRetryJob_reconciliation_check" CHECK ("reconciliationCount" >= 0 AND "maxReconciliations" BETWEEN 1 AND 48)
 );
 CREATE UNIQUE INDEX "BillingRetryJob_idempotencyKey_key" ON "BillingRetryJob"("idempotencyKey");
 CREATE UNIQUE INDEX "BillingRetryJob_cycleId_kind_attemptNumber_key" ON "BillingRetryJob"("cycleId", "kind", "attemptNumber");

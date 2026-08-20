@@ -9,7 +9,7 @@ export class RetrySettingsController {
     const shop = await this.shop(String(req.params.shop));
     if (!shop) return res.status(404).json({ error: "shop_not_found" });
     const settings = await this.prisma.billingRetrySettings.findUnique({ where: { shopId: shop.id } });
-    return res.json({ shop: shop.domain, settings: settings ?? { shopId: shop.id, ...RETRY_DEFAULTS, createdAt: null, updatedAt: null } });
+    return res.json({ shop: shop.domain, persisted: Boolean(settings), settings: settings ?? { shopId: shop.id, ...RETRY_DEFAULTS, createdAt: null, updatedAt: null } });
   }
   async put(req: Request, res: Response) {
     const shop = await this.shop(String(req.params.shop));
@@ -17,7 +17,7 @@ export class RetrySettingsController {
     try {
       const data = validateRetrySettings(req.body);
       const settings = await this.prisma.billingRetrySettings.upsert({ where: { shopId: shop.id }, create: { shopId: shop.id, ...data }, update: data });
-      return res.json({ shop: shop.domain, settings });
+      return res.json({ shop: shop.domain, persisted: true, settings });
     } catch (error) {
       return res.status(400).json({ error: error instanceof Error ? error.message : "invalid_settings" });
     }
