@@ -27,47 +27,59 @@ export class SubscriptionLifecycleService {
     if ((action === "resume" && (current === "cancelled" || current === "expired")) || (action === "pause" && TERMINAL.has(current))) throw new LifecycleError(409, "invalid_transition", "Lifecycle transition is not allowed");
 
     const existing = await this.prisma.subscriptionLifecycleAction.findUnique({ where: { subscriptionId_idempotencyKey: { subscriptionId, idempotencyKey } } });
-    if (existing) {
-      if (existing.action !== action) throw new LifecycleError(409, "idempotency_conflict", "Idempotency key was used for another action");
-      if (existing.status === "succeeded") return this.response(existing, true);
-      if (existing.status === "failed") throw new LifecycleError(existing.httpStatus || 502, existing.errorCode || "external_gateway_error", existing.errorMessage || "External gateway request failed");
-      throw new LifecycleError(409, "action_in_progress", "Lifecycle action is already pending");
-    }
+    if (existing?.action !== undefined && existing.action !== action) throw new LifecycleError(409, "idempotency_conflict", "Idempotency key was used for another action");
+    if (existing?.status === "succeeded") return this.response(existing, true);
+    if (existing?.status === "external_succeeded") return this.finalizeLocal(existing, subscription, action, actor, true);
+    if (existing?.status === "failed" && subscription.gateway !== "shopify") throw new LifecycleError(existing.httpStatus || 502, existing.errorCode || "external_gateway_error", existing.errorMessage || "External gateway request failed");
     if (action === "cancel" && current === "cancelled") return { success: true, duplicate: true, action, gateway: subscription.gateway, status: "cancelled" };
-    const pending = await this.prisma.subscriptionLifecycleAction.findFirst({ where: { subscriptionId, status: "pending" } });
+    const pending = !existing && await this.prisma.subscriptionLifecycleAction.findFirst({ where: { subscriptionId, status: "pending" } });
     if (pending) throw new LifecycleError(409, "action_in_progress", "Another lifecycle action is pending");
 
-    let record;
-    try {
+    let record = existing;
+    if (existing) {
+      const staleAt = new Date(Date.now() - 60_000);
+      const recoverable = existing.status === "failed" || ((existing.status === "pending" || existing.status === "recovering") && existing.updatedAt < staleAt);
+      if (!recoverable) throw new LifecycleError(409, "action_in_progress", "Lifecycle action is already pending");
+      const claimed = await this.prisma.subscriptionLifecycleAction.updateMany({ where: { id: existing.id, status: existing.status, updatedAt: existing.updatedAt }, data: { status: "recovering", completedAt: null, errorCode: null, errorMessage: null, httpStatus: null } });
+      if (!claimed.count) throw new LifecycleError(409, "action_in_progress", "Lifecycle action recovery is already in progress");
+      record = { ...existing, status: "recovering" };
+    } else try {
       record = await this.prisma.subscriptionLifecycleAction.create({ data: { subscriptionId, idempotencyKey, action, gateway: subscription.gateway, actor, status: "pending" } });
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
         const claimed = await this.prisma.subscriptionLifecycleAction.findUnique({ where: { subscriptionId_idempotencyKey: { subscriptionId, idempotencyKey } } });
         if (claimed?.action === action && claimed.status === "succeeded") return this.response(claimed, true);
-        if (claimed?.action === action && claimed.status === "failed") throw new LifecycleError(claimed.httpStatus || 502, claimed.errorCode || "external_gateway_error", claimed.errorMessage || "External gateway request failed");
+        if (claimed?.action === action && claimed.status === "external_succeeded") return this.finalizeLocal(claimed, subscription, action, actor, true);
         throw new LifecycleError(409, "action_in_progress", "Another lifecycle action is pending");
       }
       throw error;
     }
 
+    let externalConfirmed = false;
     try {
       const externalStatus = subscription.gateway === "shopify"
         ? await this.executeShopify(subscription.shop.domain, subscription.shopifyContractId, action, actor, idempotencyKey)
         : await this.executeStripe(subscription.externalId, action);
-      const targetStatus = TARGET[action];
-      const updateStatus = subscription.gateway === "stripe";
-      const completed = await this.prisma.$transaction(async (tx) => {
-        const updatedAction = await tx.subscriptionLifecycleAction.update({ where: { id: record.id }, data: { status: "succeeded", externalStatus, completedAt: new Date() } });
-        if (updateStatus) await tx.subscription.update({ where: { id: subscriptionId }, data: { status: targetStatus } });
-        await tx.subscriptionStatusHistory.create({ data: { subscriptionId, previousStatus: subscription.status, newStatus: updateStatus ? targetStatus : (subscription.status || targetStatus), source: "lifecycle_action", sourceEventId: `lifecycle:${record.id}`, lifecycleActionId: record.id, actor } });
-        return updatedAction;
-      });
-      return this.response(completed, false);
+      externalConfirmed = true;
+      const marked = await this.prisma.subscriptionLifecycleAction.update({ where: { id: record!.id }, data: { status: "external_succeeded", externalStatus, errorCode: null, errorMessage: null, httpStatus: null, completedAt: null } });
+      return await this.finalizeLocal(marked, subscription, action, actor, false);
     } catch (error) {
       const safe = error instanceof LifecycleError ? error : new LifecycleError(502, "external_gateway_error", "External gateway request failed");
-      await this.prisma.subscriptionLifecycleAction.update({ where: { id: record.id }, data: { status: "failed", errorCode: safe.code, errorMessage: safe.message.slice(0, 250), httpStatus: safe.statusCode, completedAt: new Date() } });
+      if (externalConfirmed) throw new LifecycleError(503, "local_persistence_pending", "External action succeeded and local reconciliation is pending");
+      await this.prisma.subscriptionLifecycleAction.update({ where: { id: record!.id }, data: { status: "failed", errorCode: safe.code, errorMessage: safe.message.slice(0, 250), httpStatus: safe.statusCode, completedAt: new Date() } });
       throw safe;
     }
+  }
+
+  private async finalizeLocal(record: { id: string; action: string; gateway: string; externalStatus: string | null }, subscription: any, action: LifecycleActionName, actor: string, duplicate: boolean) {
+    const targetStatus = TARGET[action], updateStatus = subscription.gateway === "stripe";
+    const completed = await this.prisma.$transaction(async (tx) => {
+      const updatedAction = await tx.subscriptionLifecycleAction.update({ where: { id: record.id }, data: { status: "succeeded", completedAt: new Date(), errorCode: null, errorMessage: null, httpStatus: null } });
+      if (updateStatus) await tx.subscription.update({ where: { id: subscription.id }, data: { status: targetStatus } });
+      await tx.subscriptionStatusHistory.upsert({ where: { source_sourceEventId: { source: "lifecycle_action", sourceEventId: `lifecycle:${record.id}` } }, create: { subscriptionId: subscription.id, previousStatus: subscription.status, newStatus: updateStatus ? targetStatus : (subscription.status || targetStatus), source: "lifecycle_action", sourceEventId: `lifecycle:${record.id}`, lifecycleActionId: record.id, actor }, update: {} });
+      return updatedAction;
+    });
+    return this.response(completed, duplicate);
   }
 
   private response(record: { action: string; gateway: string; externalStatus: string | null }, duplicate: boolean) {
