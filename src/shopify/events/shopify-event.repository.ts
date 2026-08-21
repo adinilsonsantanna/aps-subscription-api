@@ -10,6 +10,7 @@ import {
   optionalObject,
   optionalString,
 } from "./shopify-event.types";
+import { NotificationEventService } from "../../notifications/NotificationEventService";
 
 export interface ShopifyEventShop {
   id: string;
@@ -61,6 +62,7 @@ export function contractUpdatePatch(contract: NormalizedShopifyContract) {
     shopifyOriginOrderId: contract.originOrder?.id,
     shopifyRevisionId: contract.revisionId,
     shopifyCustomerId: contract.customer?.id,
+    shopifyCustomerEmail: contract.customer?.email,
     shopifyProductId: firstLine?.productId,
     shopifyVariantId: firstLine?.variantId,
     status: contract.status.toLowerCase(),
@@ -129,7 +131,7 @@ export function billingAttemptDataFromPayload(
 }
 
 export class PrismaShopifyEventRepository implements ShopifyEventRepository {
-  constructor(private readonly prisma = new PrismaClient()) {}
+  constructor(private readonly prisma = new PrismaClient(), private readonly notifications = new NotificationEventService(prisma)) {}
 
   findShopByDomain(domain: string) {
     return this.prisma.shop.findUnique({
@@ -187,6 +189,12 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
             where: { id: shopId },
             data: { isActive: false },
           });
+          const domains = await transaction.sendingDomain.findMany({ where: { shopId, disabledAt: null, apiKeyId: { not: null } }, select: { id: true, apiKeyId: true } });
+          for (const domain of domains) if (domain.apiKeyId) await transaction.sendingCredentialCleanupJob.upsert({ where: { sendingDomainId_providerApiKeyId_reason: { sendingDomainId: domain.id, providerApiKeyId: domain.apiKeyId, reason: "uninstall" } }, create: { sendingDomainId: domain.id, providerApiKeyId: domain.apiKeyId, reason: "uninstall" }, update: { status: "pending", availableAt: new Date(), completedAt: null } });
+          await transaction.sendingDomain.updateMany({
+            where: { shopId, disabledAt: null },
+            data: { status: "disabled", sendingVerified: false, credentialStatus: "uninstall_pending", disabledAt: new Date() },
+          });
           break;
       }
 
@@ -194,7 +202,11 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
         where: { eventId: event.webhookId },
         data: { processed: true, processedAt: new Date(), errorMessage: null, ...(event.shopifyEventId && { shopifyEventId: event.shopifyEventId }) },
       });
-    });
+      });
+    if (event.topic === "subscription_billing_attempts/success" || event.topic === "subscription_billing_attempts/failure") {
+      const attemptData = billingAttemptDataFromPayload(event.topic, event.payload), contractId = contractIdFromPayload(event.payload);
+      if (contractId) { const subscription = await this.prisma.subscription.findUnique({ where: { shopId_shopifyContractId: { shopId, shopifyContractId: contractId } }, select: { id: true, shopifyCustomerEmail: true } }); if (subscription) await this.notifications.emit({ shopId, eventType: event.topic.endsWith("/success") ? "renewal_succeeded" : "payment_failed", sourceKey: attemptData.idempotencyKey || attemptData.shopifyBillingAttemptId || event.webhookId, payload: { subscriptionId: subscription.id, orderId: attemptData.shopifyOrderId, errorCode: attemptData.errorCode }, customerEmail: subscription.shopifyCustomerEmail, occurredAt: attemptData.attemptedAt ?? event.receivedAt }); }
+    }
   }
 
   async markEventFailed(eventId: string, errorMessage: string) {
