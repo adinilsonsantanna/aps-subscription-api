@@ -224,6 +224,7 @@ model NotificationSettings {
   pausedEnabled                Boolean                   @default(true)
   cancelledEnabled             Boolean                   @default(true)
   renewalSucceededEnabled      Boolean                   @default(true)
+  lastTestAt                   DateTime?
   activeSendingDomainId        String?                   @unique
   activeSendingDomain          SendingDomain?            @relation("ActiveSendingDomain", fields: [activeSendingDomainId], references: [id], onDelete: SetNull)
   createdAt                    DateTime                  @default(now())

@@ -23,7 +23,7 @@ CREATE TABLE "NotificationSettings" (
   "paymentFailedEnabled" BOOLEAN NOT NULL DEFAULT true, "retryScheduledEnabled" BOOLEAN NOT NULL DEFAULT true,
   "inventoryFailedEnabled" BOOLEAN NOT NULL DEFAULT true, "inventoryRetryEnabled" BOOLEAN NOT NULL DEFAULT true,
   "pausedEnabled" BOOLEAN NOT NULL DEFAULT true, "cancelledEnabled" BOOLEAN NOT NULL DEFAULT true,
-  "renewalSucceededEnabled" BOOLEAN NOT NULL DEFAULT true, "activeSendingDomainId" TEXT,
+  "renewalSucceededEnabled" BOOLEAN NOT NULL DEFAULT true, "lastTestAt" TIMESTAMP(3), "activeSendingDomainId" TEXT,
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL,
   CONSTRAINT "NotificationSettings_pkey" PRIMARY KEY ("shopId")
 );
