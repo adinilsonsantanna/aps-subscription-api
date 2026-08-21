@@ -1,6 +1,10 @@
 import { Router } from "express";
 import { RetryCronController } from "../controllers/RetryCronController";
+import { NotificationController } from "../controllers/NotificationController";
 const router = Router(); const controller = new RetryCronController();
 router.post("/retry-billing", controller.run.bind(controller));
 router.get("/retry-billing", controller.run.bind(controller));
+const notifications = new NotificationController();
+router.get("/notifications", notifications.cron.bind(notifications));
+router.post("/notifications", notifications.cron.bind(notifications));
 export default router;

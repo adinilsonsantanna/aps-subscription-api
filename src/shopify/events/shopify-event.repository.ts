@@ -187,6 +187,10 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
             where: { id: shopId },
             data: { isActive: false },
           });
+          await transaction.sendingDomain.updateMany({
+            where: { shopId, disabledAt: null },
+            data: { status: "disabled", sendingVerified: false, encryptedApiKey: null, disabledAt: new Date() },
+          });
           break;
       }
 
