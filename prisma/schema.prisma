@@ -23,6 +23,7 @@ model Shop {
   retryCycles                BillingRetryCycle[]
   retryJobs                  BillingRetryJob[]
   notifications              NotificationOutbox[]
+  notificationEvents         NotificationEvent[]
   notificationSettings       NotificationSettings?
   sendingDomains             SendingDomain[]
   notificationDeliveryEvents NotificationDeliveryEvent[]
@@ -40,6 +41,7 @@ model Subscription {
   shopifyRevisionId         String?
   shopifyOriginOrderId      String?
   shopifyCustomerId         String?
+  shopifyCustomerEmail      String?
   shopifyProductId          String?
   shopifyVariantId          String?
   gateway                   String?
@@ -175,37 +177,61 @@ model BillingRetryJob {
 }
 
 model NotificationOutbox {
-  id                String                    @id @default(cuid())
-  shopId            String
-  shop              Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  cycleId           String?
-  cycle             BillingRetryCycle?        @relation(fields: [cycleId], references: [id], onDelete: SetNull)
-  idempotencyKey    String                    @unique
-  frequency         TeamNotificationFrequency
-  eventType         String
-  payload           Json
-  status            String                    @default("pending")
-  availableAt       DateTime
-  sentAt            DateTime?
-  errorMessage      String?
-  recipientType     String                    @default("team")
-  recipientEmail    String?
-  subject           String?
-  htmlBody          String?                   @db.Text
-  textBody          String?                   @db.Text
-  attemptCount      Int                       @default(0)
-  maxAttempts       Int                       @default(5)
-  claimedAt         DateTime?
-  leaseExpiresAt    DateTime?
-  providerMessageId String?                   @unique
-  lastAttemptAt     DateTime?
-  deliveredAt       DateTime?
-  createdAt         DateTime                  @default(now())
-  updatedAt         DateTime                  @updatedAt
+  id                  String                    @id @default(cuid())
+  shopId              String
+  shop                Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  cycleId             String?
+  cycle               BillingRetryCycle?        @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+  idempotencyKey      String                    @unique
+  frequency           TeamNotificationFrequency
+  eventType           String
+  payload             Json
+  status              String                    @default("pending")
+  availableAt         DateTime
+  sentAt              DateTime?
+  errorMessage        String?
+  recipientType       String                    @default("team")
+  recipientEmail      String?
+  subject             String?
+  htmlBody            String?                   @db.Text
+  textBody            String?                   @db.Text
+  attemptCount        Int                       @default(0)
+  maxAttempts         Int                       @default(5)
+  claimedAt           DateTime?
+  leaseExpiresAt      DateTime?
+  providerMessageId   String?                   @unique
+  lastAttemptAt       DateTime?
+  deliveredAt         DateTime?
+  externalSucceededAt DateTime?
+  deliveryUncertainAt DateTime?
+  deliveryDeadlineAt  DateTime?
+  includedEventIds    String[]                  @default([])
+  includedEvents      NotificationEvent[]
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
 
   @@index([status, availableAt])
   @@index([status, leaseExpiresAt])
   @@index([shopId, frequency, availableAt])
+}
+
+model NotificationEvent {
+  id                 String                    @id @default(cuid())
+  shopId             String
+  shop               Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  idempotencyKey     String                    @unique
+  eventType          String
+  payload            Json
+  recipientEmail     String?
+  frequency          TeamNotificationFrequency
+  windowKey          String?
+  windowEndAt        DateTime?
+  includedInOutboxId String?
+  includedInOutbox   NotificationOutbox?       @relation(fields: [includedInOutboxId], references: [id], onDelete: SetNull)
+  createdAt          DateTime                  @default(now())
+
+  @@index([shopId, frequency, windowKey])
+  @@index([includedInOutboxId, windowEndAt])
 }
 
 model NotificationSettings {
@@ -214,6 +240,9 @@ model NotificationSettings {
   fromName                     String?
   fromEmail                    String?
   replyTo                      String?
+  activeFromName               String?
+  activeFromEmail              String?
+  activeReplyTo                String?
   teamEmails                   String[]
   teamFrequency                TeamNotificationFrequency @default(WEEKLY_SUMMARY)
   customerNotificationsEnabled Boolean                   @default(false)
@@ -232,25 +261,52 @@ model NotificationSettings {
 }
 
 model SendingDomain {
-  id                String                   @id @default(cuid())
-  shopId            String
-  shop              Shop                     @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  domain            String                   @unique
-  providerDomainId  String?                  @unique
-  status            String                   @default("not_configured")
-  sendingVerified   Boolean                  @default(false)
-  encryptedApiKey   String?                  @db.Text
-  apiKeyId          String?
-  credentialVersion Int                      @default(1)
-  lastCheckedAt     DateTime?
-  disabledAt        DateTime?
-  records           SendingDomainDnsRecord[]
-  activeForSettings NotificationSettings?    @relation("ActiveSendingDomain")
-  createdAt         DateTime                 @default(now())
-  updatedAt         DateTime                 @updatedAt
+  id                     String                        @id @default(cuid())
+  shopId                 String
+  shop                   Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  domain                 String                        @unique
+  providerDomainId       String?                       @unique
+  status                 String                        @default("not_configured")
+  sendingVerified        Boolean                       @default(false)
+  encryptedApiKey        String?                       @db.Text
+  apiKeyId               String?
+  pendingEncryptedApiKey String?                       @db.Text
+  pendingApiKeyId        String?
+  previousApiKeyId       String?
+  credentialStatus       String                        @default("active")
+  credentialVersion      Int                           @default(1)
+  lastCheckedAt          DateTime?
+  disabledAt             DateTime?
+  records                SendingDomainDnsRecord[]
+  activeForSettings      NotificationSettings?         @relation("ActiveSendingDomain")
+  createdAt              DateTime                      @default(now())
+  updatedAt              DateTime                      @updatedAt
+  cleanupJobs            SendingCredentialCleanupJob[]
 
   @@unique([shopId, domain])
   @@index([shopId, status])
+}
+
+model SendingCredentialCleanupJob {
+  id               String        @id @default(cuid())
+  sendingDomainId  String
+  sendingDomain    SendingDomain @relation(fields: [sendingDomainId], references: [id], onDelete: Cascade)
+  providerApiKeyId String
+  reason           String
+  status           String        @default("pending")
+  attemptCount     Int           @default(0)
+  maxAttempts      Int           @default(12)
+  availableAt      DateTime      @default(now())
+  claimedAt        DateTime?
+  leaseExpiresAt   DateTime?
+  completedAt      DateTime?
+  lastError        String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@unique([sendingDomainId, providerApiKeyId, reason])
+  @@index([status, availableAt])
+  @@index([status, leaseExpiresAt])
 }
 
 model SendingDomainDnsRecord {

@@ -7,5 +7,6 @@ router.get("/domains/:shop", controller.getDomains.bind(controller));
 router.post("/domains/:shop/setup", controller.setupDomain.bind(controller));
 router.post("/domains/:shop/verify", controller.verifyDomain.bind(controller));
 router.post("/domains/:shop/refresh", controller.refreshDomain.bind(controller));
+router.post("/domains/:shop/rotate", controller.rotateDomain.bind(controller));
 router.post("/test/:shop", controller.test.bind(controller));
 export default router;
