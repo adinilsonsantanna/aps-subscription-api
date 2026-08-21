@@ -331,11 +331,30 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
       ...attempt,
     };
 
-    await transaction.subscriptionBillingAttempt.upsert({
-      where: { webhookEventId },
-      create: data,
-      update: attempt,
+    const existingAttempt = await transaction.subscriptionBillingAttempt.findFirst({
+      where: {
+        shopId,
+        OR: [
+          ...(attempt.shopifyBillingAttemptId ? [{ shopifyBillingAttemptId: attempt.shopifyBillingAttemptId }] : []),
+          ...(attempt.idempotencyKey ? [{ idempotencyKey: attempt.idempotencyKey }] : []),
+          { webhookEventId },
+        ],
+      },
+      select: { id: true },
     });
+    if (existingAttempt) {
+      await transaction.subscriptionBillingAttempt.update({ where: { id: existingAttempt.id }, data: { ...attempt, webhookEventId } });
+    } else {
+      await transaction.subscriptionBillingAttempt.create({ data });
+    }
+
+    if (attempt.shopifyOrderId && attempt.status === "succeeded") {
+      await transaction.subscriptionOrder.upsert({
+        where: { shopifyOrderKey: `${shopId}:${attempt.shopifyOrderId}` },
+        create: { subscriptionId: subscription.id, shopifyOrderId: attempt.shopifyOrderId, shopifyOrderKey: `${shopId}:${attempt.shopifyOrderId}`, gatewayOrderId: attempt.shopifyBillingAttemptId, amount: 0, status: "PAID", processedAt: attempt.attemptedAt ?? new Date() },
+        update: { shopifyOrderId: attempt.shopifyOrderId, gatewayOrderId: attempt.shopifyBillingAttemptId, status: "PAID", processedAt: attempt.attemptedAt ?? new Date() },
+      });
+    }
 
     await transaction.subscription.update({
       where: { id: subscription.id },
