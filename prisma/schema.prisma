@@ -155,7 +155,7 @@ model BillingRetryJob {
   claimedAt                DateTime?
   leaseExpiresAt           DateTime?
   completedAt              DateTime?
-  idempotencyKey           String              @unique
+  idempotencyKey           String
   errorCode                String?
   errorMessage             String?
   inventoryResult          Json?
@@ -171,6 +171,7 @@ model BillingRetryJob {
   updatedAt                DateTime            @updatedAt
 
   @@unique([cycleId, kind, attemptNumber])
+  @@unique([shopId, idempotencyKey])
   @@index([status, scheduledAt])
   @@index([status, leaseExpiresAt])
   @@index([subscriptionId, kind, status])
@@ -273,7 +274,7 @@ model SendingDomain {
   pendingEncryptedApiKey   String?                       @db.Text
   pendingApiKeyId          String?
   previousApiKeyId         String?
-  credentialStatus         String                        @default("active")
+  credentialStatus         String                        @default("ACTIVE")
   credentialVersion        Int                           @default(1)
   credentialOperationId    String?
   credentialClaimedAt      DateTime?

@@ -11,6 +11,7 @@ import {
   optionalString,
 } from "./shopify-event.types";
 import { NotificationEventService } from "../../notifications/NotificationEventService";
+import { canonicalBillingSourceKey } from "../../notifications/billing-notification-identity";
 
 export interface ShopifyEventShop {
   id: string;
@@ -127,6 +128,7 @@ export function billingAttemptDataFromPayload(
     ) ?? optionalString(nestedOrder, "admin_graphql_api_id", "id"),
     nextActionUrl: optionalString(payload, "next_action_url"),
     attemptedAt: optionalDate(payload, "attempted_at", "created_at", "completed_at"),
+    billingCycleAt: optionalDate(payload, "billing_cycle_at", "billing_cycle_date"),
   };
 }
 
@@ -207,7 +209,7 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
     if (contractTransition) { const transition = contractTransition as { eventType: string; sourceKey: string; subscriptionId: string; customerEmail: string | null }; await this.notifications.emit({ shopId, eventType: transition.eventType, sourceKey: transition.sourceKey, payload: { subscriptionId: transition.subscriptionId, contractId: event.contract!.id, status: event.contract!.status.toLowerCase() }, customerEmail: transition.customerEmail, occurredAt: event.receivedAt }); }
     if (event.topic === "subscription_billing_attempts/success" || event.topic === "subscription_billing_attempts/failure") {
       const attemptData = billingAttemptDataFromPayload(event.topic, event.payload), contractId = contractIdFromPayload(event.payload);
-      if (contractId) { const subscription = await this.prisma.subscription.findUnique({ where: { shopId_shopifyContractId: { shopId, shopifyContractId: contractId } }, select: { id: true, shopifyCustomerEmail: true } }); if (subscription) await this.notifications.emit({ shopId, eventType: event.topic.endsWith("/success") ? "renewal_succeeded" : "payment_failed", sourceKey: attemptData.idempotencyKey || attemptData.shopifyBillingAttemptId || event.webhookId, payload: { subscriptionId: subscription.id, orderId: attemptData.shopifyOrderId, errorCode: attemptData.errorCode }, customerEmail: subscription.shopifyCustomerEmail, occurredAt: attemptData.attemptedAt ?? event.receivedAt }); }
+      if (contractId) { const subscription = await this.prisma.subscription.findUnique({ where: { shopId_shopifyContractId: { shopId, shopifyContractId: contractId } }, select: { id: true, shopifyCustomerEmail: true } }); if (subscription) await this.notifications.emit({ shopId, eventType: event.topic.endsWith("/success") ? "renewal_succeeded" : "payment_failed", sourceKey: canonicalBillingSourceKey({ shopifyBillingAttemptId: attemptData.shopifyBillingAttemptId, idempotencyKey: attemptData.idempotencyKey, shopifyContractId: contractId, billingCycleAt: attemptData.billingCycleAt ?? attemptData.attemptedAt }), payload: { subscriptionId: subscription.id, orderId: attemptData.shopifyOrderId, errorCode: attemptData.errorCode }, customerEmail: subscription.shopifyCustomerEmail, occurredAt: attemptData.attemptedAt ?? event.receivedAt }); }
     }
   }
 
@@ -340,12 +342,13 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
     });
 
     const attempt = billingAttemptDataFromPayload(topic, payload);
+    const { billingCycleAt: _billingCycleAt, ...persistedAttempt } = attempt;
     const data = {
       shopId,
       subscriptionId: subscription.id,
       shopifyContractId,
       webhookEventId,
-      ...attempt,
+      ...persistedAttempt,
     };
 
     const existingAttempt = await transaction.subscriptionBillingAttempt.findFirst({
@@ -360,7 +363,7 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
       select: { id: true },
     });
     if (existingAttempt) {
-      await transaction.subscriptionBillingAttempt.update({ where: { id: existingAttempt.id }, data: { ...attempt, webhookEventId } });
+      await transaction.subscriptionBillingAttempt.update({ where: { id: existingAttempt.id }, data: { ...persistedAttempt, webhookEventId } });
     } else {
       await transaction.subscriptionBillingAttempt.create({ data });
     }

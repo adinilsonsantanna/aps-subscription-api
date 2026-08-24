@@ -52,7 +52,7 @@ CREATE TABLE "SendingDomain" (
   "id" TEXT NOT NULL, "shopId" TEXT NOT NULL, "domain" TEXT NOT NULL, "providerDomainId" TEXT,
   "status" TEXT NOT NULL DEFAULT 'not_configured', "sendingVerified" BOOLEAN NOT NULL DEFAULT false,
   "encryptedApiKey" TEXT, "apiKeyId" TEXT, "pendingEncryptedApiKey" TEXT, "pendingApiKeyId" TEXT,
-  "previousApiKeyId" TEXT, "credentialStatus" TEXT NOT NULL DEFAULT 'active', "credentialVersion" INTEGER NOT NULL DEFAULT 1,
+  "previousApiKeyId" TEXT, "credentialStatus" TEXT NOT NULL DEFAULT 'ACTIVE', "credentialVersion" INTEGER NOT NULL DEFAULT 1,
   "lastCheckedAt" TIMESTAMP(3), "disabledAt" TIMESTAMP(3),
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL,
   CONSTRAINT "SendingDomain_pkey" PRIMARY KEY ("id")
@@ -105,3 +105,5 @@ ALTER TABLE "SendingDomain" ADD CONSTRAINT "SendingDomain_shopId_fkey" FOREIGN K
 ALTER TABLE "SendingDomainDnsRecord" ADD CONSTRAINT "SendingDomainDnsRecord_sendingDomainId_fkey" FOREIGN KEY ("sendingDomainId") REFERENCES "SendingDomain"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "NotificationDeliveryEvent" ADD CONSTRAINT "NotificationDeliveryEvent_shopId_fkey" FOREIGN KEY ("shopId") REFERENCES "Shop"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 ALTER TABLE "NotificationSettings" ADD CONSTRAINT "NotificationSettings_activeSendingDomainId_fkey" FOREIGN KEY ("activeSendingDomainId") REFERENCES "SendingDomain"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DROP INDEX IF EXISTS "BillingRetryJob_idempotencyKey_key";
+CREATE UNIQUE INDEX "BillingRetryJob_shopId_idempotencyKey_key" ON "BillingRetryJob"("shopId", "idempotencyKey");
