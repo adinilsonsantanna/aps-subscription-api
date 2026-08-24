@@ -10,6 +10,8 @@ import {
   optionalObject,
   optionalString,
 } from "./shopify-event.types";
+import { NotificationEventService } from "../../notifications/NotificationEventService";
+import { canonicalBillingSourceKey } from "../../notifications/billing-notification-identity";
 
 export interface ShopifyEventShop {
   id: string;
@@ -61,6 +63,7 @@ export function contractUpdatePatch(contract: NormalizedShopifyContract) {
     shopifyOriginOrderId: contract.originOrder?.id,
     shopifyRevisionId: contract.revisionId,
     shopifyCustomerId: contract.customer?.id,
+    shopifyCustomerEmail: contract.customer?.email,
     shopifyProductId: firstLine?.productId,
     shopifyVariantId: firstLine?.variantId,
     status: contract.status.toLowerCase(),
@@ -125,11 +128,12 @@ export function billingAttemptDataFromPayload(
     ) ?? optionalString(nestedOrder, "admin_graphql_api_id", "id"),
     nextActionUrl: optionalString(payload, "next_action_url"),
     attemptedAt: optionalDate(payload, "attempted_at", "created_at", "completed_at"),
+    billingCycleAt: optionalDate(payload, "billing_cycle_at", "billing_cycle_date"),
   };
 }
 
 export class PrismaShopifyEventRepository implements ShopifyEventRepository {
-  constructor(private readonly prisma = new PrismaClient()) {}
+  constructor(private readonly prisma = new PrismaClient(), private readonly notifications = new NotificationEventService(prisma)) {}
 
   findShopByDomain(domain: string) {
     return this.prisma.shop.findUnique({
@@ -160,6 +164,7 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
   }
 
   async processEvent(event: IncomingShopifyEvent, shopId: string) {
+    let contractTransition: { eventType: string; sourceKey: string; subscriptionId: string; customerEmail: string | null } | null = null;
     await this.prisma.$transaction(async (transaction) => {
       if (event.shopifyShopId) {
         await transaction.shop.update({ where: { id: shopId }, data: { shopifyShopId: event.shopifyShopId } });
@@ -169,7 +174,7 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
           await this.upsertContract(transaction, event.contract!, shopId);
           break;
         case "subscription_contracts/update":
-          await this.updateContract(transaction, event.contract!, shopId);
+          contractTransition = await this.updateContract(transaction, event.contract!, shopId);
           break;
         case "subscription_billing_attempts/success":
         case "subscription_billing_attempts/failure":
@@ -187,6 +192,12 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
             where: { id: shopId },
             data: { isActive: false },
           });
+          const domains = await transaction.sendingDomain.findMany({ where: { shopId, disabledAt: null }, select: { id: true, apiKeyId: true, pendingApiKeyId: true, previousApiKeyId: true, cleanupJobs: { select: { providerApiKeyId: true } } } });
+          for (const domain of domains) { const ids = new Set([domain.apiKeyId, domain.pendingApiKeyId, domain.previousApiKeyId, ...domain.cleanupJobs.map(job => job.providerApiKeyId)].filter((id): id is string => Boolean(id))); for (const providerApiKeyId of ids) await transaction.sendingCredentialCleanupJob.upsert({ where: { sendingDomainId_providerApiKeyId_reason: { sendingDomainId: domain.id, providerApiKeyId, reason: "uninstall" } }, create: { sendingDomainId: domain.id, providerApiKeyId, reason: "uninstall" }, update: { status: "pending", availableAt: new Date(), completedAt: null } }); }
+          await transaction.sendingDomain.updateMany({
+            where: { shopId, disabledAt: null },
+            data: { status: "disabled", sendingVerified: false, credentialStatus: "uninstall_pending", disabledAt: new Date() },
+          });
           break;
       }
 
@@ -194,7 +205,12 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
         where: { eventId: event.webhookId },
         data: { processed: true, processedAt: new Date(), errorMessage: null, ...(event.shopifyEventId && { shopifyEventId: event.shopifyEventId }) },
       });
-    });
+      });
+    if (contractTransition) { const transition = contractTransition as { eventType: string; sourceKey: string; subscriptionId: string; customerEmail: string | null }; await this.notifications.emit({ shopId, eventType: transition.eventType, sourceKey: transition.sourceKey, payload: { subscriptionId: transition.subscriptionId, contractId: event.contract!.id, status: event.contract!.status.toLowerCase() }, customerEmail: transition.customerEmail, occurredAt: event.receivedAt }); }
+    if (event.topic === "subscription_billing_attempts/success" || event.topic === "subscription_billing_attempts/failure") {
+      const attemptData = billingAttemptDataFromPayload(event.topic, event.payload), contractId = contractIdFromPayload(event.payload);
+      if (contractId) { const subscription = await this.prisma.subscription.findUnique({ where: { shopId_shopifyContractId: { shopId, shopifyContractId: contractId } }, select: { id: true, shopifyCustomerEmail: true } }); if (subscription) await this.notifications.emit({ shopId, eventType: event.topic.endsWith("/success") ? "renewal_succeeded" : "payment_failed", sourceKey: canonicalBillingSourceKey({ shopifyBillingAttemptId: attemptData.shopifyBillingAttemptId, idempotencyKey: attemptData.idempotencyKey, shopifyContractId: contractId, billingCycleAt: attemptData.billingCycleAt ?? attemptData.attemptedAt }), payload: { subscriptionId: subscription.id, orderId: attemptData.shopifyOrderId, errorCode: attemptData.errorCode }, customerEmail: subscription.shopifyCustomerEmail, occurredAt: attemptData.attemptedAt ?? event.receivedAt }); }
+    }
   }
 
   async markEventFailed(eventId: string, errorMessage: string) {
@@ -249,8 +265,8 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
   ) {
     const shopifyContractId = contract.id;
     const requestedPatch = Object.fromEntries(Object.entries(contractUpdatePatch(contract)).filter(([, value]) => value !== undefined));
-    const existing = await transaction.subscription.findUnique({ where: { shopId_shopifyContractId: { shopId, shopifyContractId } }, select: { status: true, lastPaymentStatus: true, shopifyRevisionId: true } });
-    if (existing && !shouldApplyShopifyContractEvent(existing.status, existing.shopifyRevisionId, contract.status, contract.revisionId)) return;
+    const existing = await transaction.subscription.findUnique({ where: { shopId_shopifyContractId: { shopId, shopifyContractId } }, select: { status: true, lastPaymentStatus: true, shopifyRevisionId: true, shopifyCustomerEmail: true } });
+    if (existing && !shouldApplyShopifyContractEvent(existing.status, existing.shopifyRevisionId, contract.status, contract.revisionId)) return null;
     const terminal = ["cancelled", "expired", "failed"].includes(String(existing?.status).toLowerCase());
     const patch = terminal && contract.status.toLowerCase() === "active"
       ? Object.fromEntries(Object.entries(requestedPatch).filter(([key]) => key !== "status"))
@@ -259,7 +275,7 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
       where: { shopId_shopifyContractId: { shopId, shopifyContractId } },
       create: { shopId, shopifyContractId, ...newShopifySubscriptionData(contract) },
       update: patch,
-      select: { id: true, gateway: true },
+      select: { id: true, gateway: true, shopifyCustomerEmail: true },
     });
     if (subscription.gateway === null) {
       await transaction.subscription.update({ where: { id: subscription.id }, data: { gateway: "shopify" } });
@@ -271,6 +287,9 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
       update: {},
     });
     await this.syncContractLines(transaction, subscription.id, contract);
+    const previous = String(existing?.status || "").toLowerCase();
+    if (previous !== newStatus && (newStatus === "paused" || newStatus === "cancelled")) return { eventType: newStatus === "paused" ? "subscription_paused" : "subscription_cancelled", sourceKey: `contract:${shopifyContractId}:${newStatus}`, subscriptionId: subscription.id, customerEmail: subscription.shopifyCustomerEmail || existing?.shopifyCustomerEmail || null };
+    return null;
   }
 
   private async syncContractLines(
@@ -323,12 +342,13 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
     });
 
     const attempt = billingAttemptDataFromPayload(topic, payload);
+    const { billingCycleAt: _billingCycleAt, ...persistedAttempt } = attempt;
     const data = {
       shopId,
       subscriptionId: subscription.id,
       shopifyContractId,
       webhookEventId,
-      ...attempt,
+      ...persistedAttempt,
     };
 
     const existingAttempt = await transaction.subscriptionBillingAttempt.findFirst({
@@ -343,7 +363,7 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
       select: { id: true },
     });
     if (existingAttempt) {
-      await transaction.subscriptionBillingAttempt.update({ where: { id: existingAttempt.id }, data: { ...attempt, webhookEventId } });
+      await transaction.subscriptionBillingAttempt.update({ where: { id: existingAttempt.id }, data: { ...persistedAttempt, webhookEventId } });
     } else {
       await transaction.subscriptionBillingAttempt.create({ data });
     }

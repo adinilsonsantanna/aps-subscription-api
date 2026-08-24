@@ -28,12 +28,14 @@
   },
   "homepage": "https://github.com/adinilsonsantanna/aps-subscription-api#readme",
   "dependencies": {
+    "@vercel/functions": "^2.2.12",
     "@prisma/client": "^6.19.3",
     "@shopify/shopify-api": "^13.1.0",
     "@vercel/node": "^5.9.5",
     "dotenv": "^16.6.1",
     "express": "^5.2.1",
     "prisma": "^6.19.3",
+    "resend": "^6.21.0",
     "stripe": "^17.7.0"
   },
   "devDependencies": {

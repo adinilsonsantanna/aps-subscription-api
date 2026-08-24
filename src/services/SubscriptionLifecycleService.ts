@@ -1,5 +1,6 @@
 import { Prisma, PrismaClient } from "@prisma/client";
 import { StripeSubscriptionService } from "../gateways/stripe/stripe-subscription.service";
+import { NotificationEventService } from "../notifications/NotificationEventService";
 
 export type LifecycleActionName = "pause" | "resume" | "cancel";
 const TERMINAL = new Set(["cancelled", "expired", "failed"]);
@@ -15,6 +16,7 @@ export class SubscriptionLifecycleService {
     private prisma = new PrismaClient(),
     private stripe = new StripeSubscriptionService(),
     private fetchFn: Fetch = fetch,
+    private notifications = new NotificationEventService(prisma),
   ) {}
 
   async execute(subscriptionId: string, action: LifecycleActionName, idempotencyKey: string, actor = "CUSTOMER") {
@@ -71,7 +73,7 @@ export class SubscriptionLifecycleService {
     }
   }
 
-  private async finalizeLocal(record: { id: string; action: string; gateway: string; externalStatus: string | null }, subscription: any, action: LifecycleActionName, actor: string, duplicate: boolean) {
+  private async finalizeLocal(record: { id: string; idempotencyKey?: string; action: string; gateway: string; externalStatus: string | null }, subscription: any, action: LifecycleActionName, actor: string, duplicate: boolean) {
     const targetStatus = TARGET[action], updateStatus = subscription.gateway === "stripe";
     const completed = await this.prisma.$transaction(async (tx) => {
       const updatedAction = await tx.subscriptionLifecycleAction.update({ where: { id: record.id }, data: { status: "succeeded", completedAt: new Date(), errorCode: null, errorMessage: null, httpStatus: null } });
@@ -79,6 +81,7 @@ export class SubscriptionLifecycleService {
       await tx.subscriptionStatusHistory.upsert({ where: { source_sourceEventId: { source: "lifecycle_action", sourceEventId: `lifecycle:${record.id}` } }, create: { subscriptionId: subscription.id, previousStatus: subscription.status, newStatus: updateStatus ? targetStatus : (subscription.status || targetStatus), source: "lifecycle_action", sourceEventId: `lifecycle:${record.id}`, lifecycleActionId: record.id, actor }, update: {} });
       return updatedAction;
     });
+    if (subscription.gateway === "shopify" && (action === "pause" || action === "cancel")) await this.notifications.emit({ shopId: subscription.shopId, eventType: action === "pause" ? "subscription_paused" : "subscription_cancelled", sourceKey: `contract:${subscription.shopifyContractId}:${action === "pause" ? "paused" : "cancelled"}`, payload: { subscriptionId: subscription.id, contractId: subscription.shopifyContractId, status: action === "pause" ? "paused" : "cancelled" }, customerEmail: subscription.shopifyCustomerEmail });
     return this.response(completed, duplicate);
   }
 
