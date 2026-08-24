@@ -81,7 +81,7 @@ export class SubscriptionLifecycleService {
       await tx.subscriptionStatusHistory.upsert({ where: { source_sourceEventId: { source: "lifecycle_action", sourceEventId: `lifecycle:${record.id}` } }, create: { subscriptionId: subscription.id, previousStatus: subscription.status, newStatus: updateStatus ? targetStatus : (subscription.status || targetStatus), source: "lifecycle_action", sourceEventId: `lifecycle:${record.id}`, lifecycleActionId: record.id, actor }, update: {} });
       return updatedAction;
     });
-    if (subscription.gateway === "shopify" && (action === "pause" || action === "cancel")) await this.notifications.emit({ shopId: subscription.shopId, eventType: action === "pause" ? "subscription_paused" : "subscription_cancelled", sourceKey: record.idempotencyKey || `lifecycle:${record.id}`, payload: { subscriptionId: subscription.id }, customerEmail: subscription.shopifyCustomerEmail });
+    if (subscription.gateway === "shopify" && (action === "pause" || action === "cancel")) await this.notifications.emit({ shopId: subscription.shopId, eventType: action === "pause" ? "subscription_paused" : "subscription_cancelled", sourceKey: `contract:${subscription.shopifyContractId}:${action === "pause" ? "paused" : "cancelled"}`, payload: { subscriptionId: subscription.id, contractId: subscription.shopifyContractId, status: action === "pause" ? "paused" : "cancelled" }, customerEmail: subscription.shopifyCustomerEmail });
     return this.response(completed, duplicate);
   }
 

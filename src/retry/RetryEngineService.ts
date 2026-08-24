@@ -62,7 +62,7 @@ export class RetryEngineService {
       const completed = await tx.billingRetryCycle.updateMany({ where: { id: job.cycleId, status: { not: "succeeded" } }, data: { status: "succeeded" } });
       if (completed.count) await tx.subscription.update({ where: { id: job.subscriptionId }, data: { lastPaymentStatus: "succeeded", nextBillingAt: advanceBillingDate(job.cycle.billingCycleAt, job.subscription.billingInterval, job.subscription.billingIntervalCount) } });
     });
-    await this.notificationEvents.emit({ shopId: job.shopId, eventType: "renewal_succeeded", sourceKey: job.idempotencyKey, payload: { subscriptionId: job.subscriptionId, orderId: result.orderId, amount: result.amount, currency: result.currencyCode }, customerEmail: job.subscription.shopifyCustomerEmail, occurredAt: now });
+    await this.notificationEvents.emit({ shopId: job.shopId, eventType: "renewal_succeeded", sourceKey: result.billingAttemptId || job.idempotencyKey, payload: { subscriptionId: job.subscriptionId, orderId: result.orderId, amount: result.amount, currency: result.currencyCode }, customerEmail: job.subscription.shopifyCustomerEmail, occurredAt: now });
   }
 
   private async handleUncertain(job: any, result: AppResult, now: Date, metrics: RetryMetrics) {

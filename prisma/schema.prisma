@@ -261,30 +261,36 @@ model NotificationSettings {
 }
 
 model SendingDomain {
-  id                     String                        @id @default(cuid())
-  shopId                 String
-  shop                   Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  domain                 String                        @unique
-  providerDomainId       String?                       @unique
-  status                 String                        @default("not_configured")
-  sendingVerified        Boolean                       @default(false)
-  encryptedApiKey        String?                       @db.Text
-  apiKeyId               String?
-  pendingEncryptedApiKey String?                       @db.Text
-  pendingApiKeyId        String?
-  previousApiKeyId       String?
-  credentialStatus       String                        @default("active")
-  credentialVersion      Int                           @default(1)
-  lastCheckedAt          DateTime?
-  disabledAt             DateTime?
-  records                SendingDomainDnsRecord[]
-  activeForSettings      NotificationSettings?         @relation("ActiveSendingDomain")
-  createdAt              DateTime                      @default(now())
-  updatedAt              DateTime                      @updatedAt
-  cleanupJobs            SendingCredentialCleanupJob[]
+  id                       String                        @id @default(cuid())
+  shopId                   String
+  shop                     Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  domain                   String                        @unique
+  providerDomainId         String?                       @unique
+  status                   String                        @default("not_configured")
+  sendingVerified          Boolean                       @default(false)
+  encryptedApiKey          String?                       @db.Text
+  apiKeyId                 String?
+  pendingEncryptedApiKey   String?                       @db.Text
+  pendingApiKeyId          String?
+  previousApiKeyId         String?
+  credentialStatus         String                        @default("active")
+  credentialVersion        Int                           @default(1)
+  credentialOperationId    String?
+  credentialClaimedAt      DateTime?
+  credentialLeaseExpiresAt DateTime?
+  credentialAttemptCount   Int                           @default(0)
+  credentialError          String?
+  lastCheckedAt            DateTime?
+  disabledAt               DateTime?
+  records                  SendingDomainDnsRecord[]
+  activeForSettings        NotificationSettings?         @relation("ActiveSendingDomain")
+  createdAt                DateTime                      @default(now())
+  updatedAt                DateTime                      @updatedAt
+  cleanupJobs              SendingCredentialCleanupJob[]
 
   @@unique([shopId, domain])
   @@index([shopId, status])
+  @@index([credentialStatus, credentialLeaseExpiresAt])
 }
 
 model SendingCredentialCleanupJob {

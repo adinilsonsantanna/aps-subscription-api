@@ -61,6 +61,12 @@ CREATE UNIQUE INDEX "SendingDomain_domain_key" ON "SendingDomain"("domain");
 CREATE UNIQUE INDEX "SendingDomain_providerDomainId_key" ON "SendingDomain"("providerDomainId");
 CREATE UNIQUE INDEX "SendingDomain_shopId_domain_key" ON "SendingDomain"("shopId", "domain");
 CREATE INDEX "SendingDomain_shopId_status_idx" ON "SendingDomain"("shopId", "status");
+ALTER TABLE "SendingDomain" ADD COLUMN "credentialOperationId" TEXT,
+ADD COLUMN "credentialClaimedAt" TIMESTAMP(3),
+ADD COLUMN "credentialLeaseExpiresAt" TIMESTAMP(3),
+ADD COLUMN "credentialAttemptCount" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN "credentialError" TEXT;
+CREATE INDEX "SendingDomain_credentialStatus_credentialLeaseExpiresAt_idx" ON "SendingDomain"("credentialStatus", "credentialLeaseExpiresAt");
 
 CREATE TABLE "SendingCredentialCleanupJob" (
   "id" TEXT NOT NULL, "sendingDomainId" TEXT NOT NULL, "providerApiKeyId" TEXT NOT NULL,

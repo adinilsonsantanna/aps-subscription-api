@@ -162,6 +162,7 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
   }
 
   async processEvent(event: IncomingShopifyEvent, shopId: string) {
+    let contractTransition: { eventType: string; sourceKey: string; subscriptionId: string; customerEmail: string | null } | null = null;
     await this.prisma.$transaction(async (transaction) => {
       if (event.shopifyShopId) {
         await transaction.shop.update({ where: { id: shopId }, data: { shopifyShopId: event.shopifyShopId } });
@@ -171,7 +172,7 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
           await this.upsertContract(transaction, event.contract!, shopId);
           break;
         case "subscription_contracts/update":
-          await this.updateContract(transaction, event.contract!, shopId);
+          contractTransition = await this.updateContract(transaction, event.contract!, shopId);
           break;
         case "subscription_billing_attempts/success":
         case "subscription_billing_attempts/failure":
@@ -189,8 +190,8 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
             where: { id: shopId },
             data: { isActive: false },
           });
-          const domains = await transaction.sendingDomain.findMany({ where: { shopId, disabledAt: null, apiKeyId: { not: null } }, select: { id: true, apiKeyId: true } });
-          for (const domain of domains) if (domain.apiKeyId) await transaction.sendingCredentialCleanupJob.upsert({ where: { sendingDomainId_providerApiKeyId_reason: { sendingDomainId: domain.id, providerApiKeyId: domain.apiKeyId, reason: "uninstall" } }, create: { sendingDomainId: domain.id, providerApiKeyId: domain.apiKeyId, reason: "uninstall" }, update: { status: "pending", availableAt: new Date(), completedAt: null } });
+          const domains = await transaction.sendingDomain.findMany({ where: { shopId, disabledAt: null }, select: { id: true, apiKeyId: true, pendingApiKeyId: true, previousApiKeyId: true, cleanupJobs: { select: { providerApiKeyId: true } } } });
+          for (const domain of domains) { const ids = new Set([domain.apiKeyId, domain.pendingApiKeyId, domain.previousApiKeyId, ...domain.cleanupJobs.map(job => job.providerApiKeyId)].filter((id): id is string => Boolean(id))); for (const providerApiKeyId of ids) await transaction.sendingCredentialCleanupJob.upsert({ where: { sendingDomainId_providerApiKeyId_reason: { sendingDomainId: domain.id, providerApiKeyId, reason: "uninstall" } }, create: { sendingDomainId: domain.id, providerApiKeyId, reason: "uninstall" }, update: { status: "pending", availableAt: new Date(), completedAt: null } }); }
           await transaction.sendingDomain.updateMany({
             where: { shopId, disabledAt: null },
             data: { status: "disabled", sendingVerified: false, credentialStatus: "uninstall_pending", disabledAt: new Date() },
@@ -203,6 +204,7 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
         data: { processed: true, processedAt: new Date(), errorMessage: null, ...(event.shopifyEventId && { shopifyEventId: event.shopifyEventId }) },
       });
       });
+    if (contractTransition) { const transition = contractTransition as { eventType: string; sourceKey: string; subscriptionId: string; customerEmail: string | null }; await this.notifications.emit({ shopId, eventType: transition.eventType, sourceKey: transition.sourceKey, payload: { subscriptionId: transition.subscriptionId, contractId: event.contract!.id, status: event.contract!.status.toLowerCase() }, customerEmail: transition.customerEmail, occurredAt: event.receivedAt }); }
     if (event.topic === "subscription_billing_attempts/success" || event.topic === "subscription_billing_attempts/failure") {
       const attemptData = billingAttemptDataFromPayload(event.topic, event.payload), contractId = contractIdFromPayload(event.payload);
       if (contractId) { const subscription = await this.prisma.subscription.findUnique({ where: { shopId_shopifyContractId: { shopId, shopifyContractId: contractId } }, select: { id: true, shopifyCustomerEmail: true } }); if (subscription) await this.notifications.emit({ shopId, eventType: event.topic.endsWith("/success") ? "renewal_succeeded" : "payment_failed", sourceKey: attemptData.idempotencyKey || attemptData.shopifyBillingAttemptId || event.webhookId, payload: { subscriptionId: subscription.id, orderId: attemptData.shopifyOrderId, errorCode: attemptData.errorCode }, customerEmail: subscription.shopifyCustomerEmail, occurredAt: attemptData.attemptedAt ?? event.receivedAt }); }
@@ -261,8 +263,8 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
   ) {
     const shopifyContractId = contract.id;
     const requestedPatch = Object.fromEntries(Object.entries(contractUpdatePatch(contract)).filter(([, value]) => value !== undefined));
-    const existing = await transaction.subscription.findUnique({ where: { shopId_shopifyContractId: { shopId, shopifyContractId } }, select: { status: true, lastPaymentStatus: true, shopifyRevisionId: true } });
-    if (existing && !shouldApplyShopifyContractEvent(existing.status, existing.shopifyRevisionId, contract.status, contract.revisionId)) return;
+    const existing = await transaction.subscription.findUnique({ where: { shopId_shopifyContractId: { shopId, shopifyContractId } }, select: { status: true, lastPaymentStatus: true, shopifyRevisionId: true, shopifyCustomerEmail: true } });
+    if (existing && !shouldApplyShopifyContractEvent(existing.status, existing.shopifyRevisionId, contract.status, contract.revisionId)) return null;
     const terminal = ["cancelled", "expired", "failed"].includes(String(existing?.status).toLowerCase());
     const patch = terminal && contract.status.toLowerCase() === "active"
       ? Object.fromEntries(Object.entries(requestedPatch).filter(([key]) => key !== "status"))
@@ -271,7 +273,7 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
       where: { shopId_shopifyContractId: { shopId, shopifyContractId } },
       create: { shopId, shopifyContractId, ...newShopifySubscriptionData(contract) },
       update: patch,
-      select: { id: true, gateway: true },
+      select: { id: true, gateway: true, shopifyCustomerEmail: true },
     });
     if (subscription.gateway === null) {
       await transaction.subscription.update({ where: { id: subscription.id }, data: { gateway: "shopify" } });
@@ -283,6 +285,9 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
       update: {},
     });
     await this.syncContractLines(transaction, subscription.id, contract);
+    const previous = String(existing?.status || "").toLowerCase();
+    if (previous !== newStatus && (newStatus === "paused" || newStatus === "cancelled")) return { eventType: newStatus === "paused" ? "subscription_paused" : "subscription_cancelled", sourceKey: `contract:${shopifyContractId}:${newStatus}`, subscriptionId: subscription.id, customerEmail: subscription.shopifyCustomerEmail || existing?.shopifyCustomerEmail || null };
+    return null;
   }
 
   private async syncContractLines(
