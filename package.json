@@ -14,7 +14,11 @@
     "migrate:deploy": "prisma migrate deploy",
     "postinstall": "prisma generate",
     "start": "node dist/server.js",
-    "test": "npm run build && node --test dist/src/**/__tests__/*.test.js"
+    "test": "npm run build && node --test dist/src/**/__tests__/*.test.js",
+    "test:integration": "npm run build && node --test dist/src/retry/__tests__/retry-engine.service.test.js dist/src/stripe/__tests__/subscription-order-prisma.test.js dist/src/shopify/events/__tests__/shopify-notification-integration.test.js",
+    "test:contract": "npm run build && node --test dist/src/shopify/events/__tests__/shopify-event.service.test.js dist/src/controllers/__tests__/retry-cron.controller.test.js",
+    "test:full-cycle": "npm test",
+    "test:live:dry-run": "node scripts/live-subscription-smoke.mjs"
   },
   "repository": {
     "type": "git",
