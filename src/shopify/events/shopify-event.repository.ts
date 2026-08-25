@@ -12,10 +12,13 @@ import {
 } from "./shopify-event.types";
 import { NotificationEventService } from "../../notifications/NotificationEventService";
 import { canonicalBillingSourceKey } from "../../notifications/billing-notification-identity";
+import { canonicalizeShopId } from "../../utils/shopId";
+import { ShopifyShopIdentityMismatchError } from "./shopify-event.types";
 
 export interface ShopifyEventShop {
   id: string;
   isActive: boolean;
+  shopifyShopId: string | null;
 }
 
 export interface ShopifyEventRepository {
@@ -138,7 +141,7 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
   findShopByDomain(domain: string) {
     return this.prisma.shop.findUnique({
       where: { domain },
-      select: { id: true, isActive: true },
+      select: { id: true, isActive: true, shopifyShopId: true },
     });
   }
 
@@ -166,8 +169,12 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
   async processEvent(event: IncomingShopifyEvent, shopId: string) {
     let contractTransition: { eventType: string; sourceKey: string; subscriptionId: string; customerEmail: string | null } | null = null;
     await this.prisma.$transaction(async (transaction) => {
+      const canonicalEventShopId = event.shopifyShopId ? canonicalizeShopId(event.shopifyShopId) : undefined;
       if (event.shopifyShopId) {
-        await transaction.shop.update({ where: { id: shopId }, data: { shopifyShopId: event.shopifyShopId } });
+        const storedIdentity = await transaction.shop.findUnique({ where: { id: shopId }, select: { shopifyShopId: true } });
+        if (!storedIdentity?.shopifyShopId || canonicalizeShopId(storedIdentity.shopifyShopId) !== canonicalEventShopId) {
+          throw new ShopifyShopIdentityMismatchError("Shop event identity does not match the registered shop");
+        }
       }
       switch (event.topic) {
         case "subscription_contracts/create":
@@ -188,16 +195,55 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
           );
           break;
         case "app/uninstalled":
-          await transaction.shop.update({
+          if (!event.triggeredAt) {
+            throw new Error(`[app/uninstalled] Evento sem triggeredAt para shop ${shopId}`);
+          }
+          if (!canonicalEventShopId) {
+            throw new Error(`[app/uninstalled] Evento sem shopifyShopId para shop ${shopId}`);
+          }
+
+          const captured = await transaction.shop.findUnique({
             where: { id: shopId },
-            data: { isActive: false },
+            select: { installationGeneration: true },
           });
-          const domains = await transaction.sendingDomain.findMany({ where: { shopId, disabledAt: null }, select: { id: true, apiKeyId: true, pendingApiKeyId: true, previousApiKeyId: true, cleanupJobs: { select: { providerApiKeyId: true } } } });
-          for (const domain of domains) { const ids = new Set([domain.apiKeyId, domain.pendingApiKeyId, domain.previousApiKeyId, ...domain.cleanupJobs.map(job => job.providerApiKeyId)].filter((id): id is string => Boolean(id))); for (const providerApiKeyId of ids) await transaction.sendingCredentialCleanupJob.upsert({ where: { sendingDomainId_providerApiKeyId_reason: { sendingDomainId: domain.id, providerApiKeyId, reason: "uninstall" } }, create: { sendingDomainId: domain.id, providerApiKeyId, reason: "uninstall" }, update: { status: "pending", availableAt: new Date(), completedAt: null } }); }
-          await transaction.sendingDomain.updateMany({
-            where: { shopId, disabledAt: null },
-            data: { status: "disabled", sendingVerified: false, credentialStatus: "uninstall_pending", disabledAt: new Date() },
+          if (!captured) throw new Error(`[app/uninstalled] Loja nao encontrada: ${shopId}`);
+
+          const result = await transaction.shop.updateMany({
+            where: {
+              id: shopId,
+              domain: event.shop,
+              shopifyShopId: canonicalEventShopId,
+              installationGeneration: captured.installationGeneration,
+              isActive: true,
+              AND: [
+                {
+                  OR: [
+                    { lastInstalledAt: null },
+                    { lastInstalledAt: { lte: event.triggeredAt } },
+                  ],
+                },
+                {
+                  OR: [
+                    { lastUninstalledAt: null },
+                    { lastUninstalledAt: { lt: event.triggeredAt } },
+                  ],
+                },
+              ],
+            },
+            data: {
+              isActive: false,
+              lastUninstalledAt: event.triggeredAt,
+            },
           });
+
+          if (result.count > 0) {
+            const domains = await transaction.sendingDomain.findMany({ where: { shopId, disabledAt: null }, select: { id: true, apiKeyId: true, pendingApiKeyId: true, previousApiKeyId: true, cleanupJobs: { select: { providerApiKeyId: true } } } });
+            for (const domain of domains) { const ids = new Set([domain.apiKeyId, domain.pendingApiKeyId, domain.previousApiKeyId, ...domain.cleanupJobs.map(job => job.providerApiKeyId)].filter((id): id is string => Boolean(id))); for (const providerApiKeyId of ids) await transaction.sendingCredentialCleanupJob.upsert({ where: { sendingDomainId_providerApiKeyId_reason: { sendingDomainId: domain.id, providerApiKeyId, reason: "uninstall" } }, create: { sendingDomainId: domain.id, providerApiKeyId, reason: "uninstall", availableAt: event.triggeredAt }, update: { status: "pending", availableAt: event.triggeredAt, completedAt: null } }); }
+            await transaction.sendingDomain.updateMany({
+              where: { shopId, disabledAt: null },
+              data: { status: "disabled", sendingVerified: false, credentialStatus: "uninstall_pending", disabledAt: event.triggeredAt },
+            });
+          }
           break;
       }
 

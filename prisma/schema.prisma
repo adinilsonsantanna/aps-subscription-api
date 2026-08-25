@@ -29,6 +29,12 @@ model Shop {
   notificationDeliveryEvents NotificationDeliveryEvent[]
   createdAt                  DateTime                     @default(now())
   updatedAt                  DateTime                     @updatedAt
+  lastInstalledAt            DateTime?
+  lastUninstalledAt          DateTime?
+  installationGeneration     Int                          @default(0)
+
+  @@index([domain, shopifyShopId, installationGeneration])
+  @@index([isActive, lastInstalledAt, lastUninstalledAt])
 }
 
 model Subscription {
