@@ -19,6 +19,7 @@ export interface IncomingShopifyEvent {
   payload: ShopifyEventPayload;
   contract?: NormalizedShopifyContract;
   receivedAt: Date;
+  triggeredAt?: Date;
 }
 
 export interface NormalizedShopifyContract {
@@ -129,6 +130,10 @@ export function validateIncomingShopifyEvent(value: unknown): IncomingShopifyEve
   if (Number.isNaN(receivedAt.getTime())) {
     throw new ShopifyEventValidationError("Invalid receivedAt");
   }
+  const triggeredAt = typeof body.triggeredAt === "string" ? new Date(body.triggeredAt) : undefined;
+  if (body.topic === "app/uninstalled" && (!triggeredAt || Number.isNaN(triggeredAt.getTime()))) {
+    throw new ShopifyEventValidationError("Invalid triggeredAt");
+  }
 
   return {
     shop,
@@ -141,6 +146,7 @@ export function validateIncomingShopifyEvent(value: unknown): IncomingShopifyEve
       ? { contract: validatedContract(body.contract) }
       : {}),
     receivedAt,
+    ...(triggeredAt && { triggeredAt }),
   };
 }
 

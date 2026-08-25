@@ -120,6 +120,7 @@ function body(topic: string, webhookId: string, payload: ShopifyEventPayload = {
     topic,
     webhookId,
     payload,
+    ...(topic === "app/uninstalled" ? { shopifyShopId: "gid://shopify/Shop/1", triggeredAt: "2026-08-14T11:59:00.000Z" } : {}),
     ...(topic.startsWith("subscription_contracts/") ? { contract: {
       id,
       status: optionalString(payload, "status") ?? "ACTIVE",

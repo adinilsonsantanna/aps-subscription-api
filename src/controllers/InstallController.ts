@@ -2,11 +2,11 @@
 // Controller para instalação/sincronização de lojas
 
 import { Request, Response } from "express";
-import { ShopRepository } from "../repositories/ShopRepository";
+import { ShopService } from "../services/ShopService";
 import { ShopifyAdminService } from "../shopify/services/ShopifyAdminService";
 
 export class InstallController {
-  private shopService = new ShopRepository();
+  private shopService = new ShopService();
   private shopifyAdminService = new ShopifyAdminService();
 
   /**
@@ -31,10 +31,10 @@ export class InstallController {
       } = body;
 
       // Valida dados obrigatórios
-      if (!domain || !accessToken) {
+      if (!domain || !accessToken || !shopifyShopId) {
         return res.status(400).json({
           error: "Dados inválidos",
-          message: "domain e accessToken são obrigatórios",
+          message: "domain, accessToken e shopifyShopId são obrigatórios",
         });
       }
 
@@ -46,30 +46,17 @@ export class InstallController {
       const safeShopifyShopId = shopifyShopId ? String(shopifyShopId) : undefined;
 
       // Verifica se a loja já existe
-      const existingShop = await this.shopService.findByDomain(safeDomain);
-
-      let shop;
-      if (!existingShop) {
-        // Cria nova loja
-        shop = await this.shopService.create({
-          shopifyShopId: safeShopifyShopId,
-          name: safeName,
-          domain: safeDomain,
-          accessToken: safeAccessToken,
-          scopes: safeScopes,
-        });
-      } else {
-        // Atualiza token e scopes
-        shop = await this.shopService.updateToken(
-          safeDomain,
-          safeAccessToken,
-          safeScopes
-        );
-      }
+      const shop = await this.shopService.installShop({
+        shopifyShopId: safeShopifyShopId,
+        name: safeName,
+        domain: safeDomain,
+        accessToken: safeAccessToken,
+        scopes: safeScopes,
+      });
 
       return res.status(200).json({
         success: true,
-        message: existingShop ? "Loja atualizada" : "Loja criada",
+        message: "Loja processada",
         shop: {
           id: shop.id,
           domain: shop.domain,
