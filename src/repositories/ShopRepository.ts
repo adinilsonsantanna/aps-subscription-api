@@ -1,4 +1,5 @@
 import { Prisma, PrismaClient } from "@prisma/client";
+import { canonicalizeShopId } from "../utils/shopId";
 
 export interface DurableShopInstallation {
   shopifyShopId: string;
@@ -17,22 +18,36 @@ export class ShopRepository {
   findByShopifyId(shopifyShopId: string) { return this.prisma.shop.findUnique({ where: { shopifyShopId } }); }
 
   async installOrReactivate(data: DurableShopInstallation) {
+    const canonicalIncomingShopId = canonicalizeShopId(data.shopifyShopId);
+
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         return await this.prisma.$transaction(async (tx) => {
           const [byDomain, byShopifyId] = await Promise.all([
             tx.shop.findUnique({ where: { domain: data.domain } }),
-            tx.shop.findUnique({ where: { shopifyShopId: data.shopifyShopId } }),
+            tx.shop.findUnique({ where: { shopifyShopId: canonicalIncomingShopId } }),
           ]);
-          if (byDomain && byDomain.shopifyShopId !== data.shopifyShopId) throw new ShopIdentityConflictError("Shop ID does not match the registered domain");
+          
+          // Verificar conflitos usando canonicalização
+          if (byDomain) {
+              const canonicalExisting = canonicalizeShopId(byDomain.shopifyShopId!);
+              if (canonicalExisting !== canonicalIncomingShopId) {
+                  throw new ShopIdentityConflictError("Shop ID does not match the registered domain");
+              }
+          }
           if (byShopifyId && byShopifyId.domain !== data.domain) throw new ShopIdentityConflictError("Domain does not match the registered shop ID");
+          
           const existing = byDomain ?? byShopifyId;
-          if (!existing) return tx.shop.create({ data: { ...data, isActive: true, installationGeneration: 1, lastInstalledAt: new Date() } });
-          if (existing.isActive) return tx.shop.update({ where: { id: existing.id }, data: { name: data.name, accessToken: data.accessToken, scopes: data.scopes } });
 
+          if (!existing) return tx.shop.create({ data: { ...data, shopifyShopId: canonicalIncomingShopId, isActive: true, installationGeneration: 1, lastInstalledAt: new Date() } });
+          
+          // Se já existe e está ativo, apenas atualiza token se necessário
+          if (existing.isActive) return tx.shop.update({ where: { id: existing.id }, data: { shopifyShopId: canonicalIncomingShopId, name: data.name, accessToken: data.accessToken, scopes: data.scopes } });
+
+          // Reinstalação/Reativação
           const reactivated = await tx.shop.updateMany({
-            where: { id: existing.id, domain: data.domain, shopifyShopId: data.shopifyShopId, isActive: false, installationGeneration: existing.installationGeneration },
-            data: { name: data.name, accessToken: data.accessToken, scopes: data.scopes, isActive: true, lastInstalledAt: new Date(), lastUninstalledAt: null, installationGeneration: { increment: 1 } },
+            where: { id: existing.id, domain: data.domain, isActive: false, installationGeneration: existing.installationGeneration },
+            data: { shopifyShopId: canonicalIncomingShopId, name: data.name, accessToken: data.accessToken, scopes: data.scopes, isActive: true, lastInstalledAt: new Date(), lastUninstalledAt: null, installationGeneration: { increment: 1 } },
           });
           if (reactivated.count !== 1) throw new Prisma.PrismaClientKnownRequestError("Concurrent installation", { code: "P2034", clientVersion: Prisma.prismaVersion.client });
           return tx.shop.findUniqueOrThrow({ where: { id: existing.id } });

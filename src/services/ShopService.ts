@@ -1,4 +1,5 @@
 import { ShopRepository } from "../repositories/ShopRepository";
+import { canonicalizeShopId } from "../utils/shopId";
 
 export class ShopService {
     constructor(private readonly repository = new ShopRepository()) {}
@@ -15,15 +16,17 @@ export class ShopService {
         scopes: string;
     }) {
         const domain = data.domain.trim().toLowerCase();
-        const shopifyShopId = data.shopifyShopId?.trim();
         if (!/^([a-z0-9][a-z0-9-]*\.)*myshopify\.com$/.test(domain)) {
             throw new Error("dominio Shopify invalido");
         }
-        if (!shopifyShopId || !/^gid:\/\/shopify\/Shop\/\d+$/.test(shopifyShopId)) {
+        
+        const canonicalShopId = data.shopifyShopId ? canonicalizeShopId(data.shopifyShopId) : undefined;
+        if (!canonicalShopId) {
             throw new Error("shopifyShopId é obrigatório para instalação durável");
         }
+        
         return this.repository.installOrReactivate({
-            shopifyShopId,
+            shopifyShopId: canonicalShopId,
             name: data.name,
             domain,
             accessToken: data.accessToken,
