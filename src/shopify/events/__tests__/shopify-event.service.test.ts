@@ -16,6 +16,7 @@ import {
   NormalizedShopifyContract,
   ShopifyEventPayload,
   ShopifyShopNotFoundError,
+  ShopifyShopIdentityMismatchError,
   contractIdFromPayload,
   optionalString,
 } from "../shopify-event.types";
@@ -36,7 +37,7 @@ test("Shopify event without revision cannot make an unordered reversible transit
 });
 
 class MemoryRepository implements ShopifyEventRepository {
-  shops = new Map<string, { id: string; isActive: boolean; shopifyShopId?: string }>([["known.myshopify.com", { id: "shop-1", isActive: true }]]);
+  shops = new Map<string, { id: string; isActive: boolean; shopifyShopId: string | null }>([["known.myshopify.com", { id: "shop-1", isActive: true, shopifyShopId: "gid://shopify/Shop/1" }]]);
   events = new Map<string, { processed: boolean; processedAt?: Date; errorMessage?: string; shopifyEventId?: string }>();
   contracts = new Map<string, Partial<ReturnType<typeof contractPatchFromPayload>> & { shopifyRevisionId?: string; shopifyProductId?: string; shopifyVariantId?: string }>();
   lines = new Map<string, Map<string, { quantity: number; currentPrice: string; isActive: boolean; sellingPlanId?: string }>>();
@@ -63,7 +64,6 @@ class MemoryRepository implements ShopifyEventRepository {
       throw new Error("transient failure");
     }
 
-    if (event.shopifyShopId) this.shops.set(event.shop, { ...this.shops.get(event.shop)!, shopifyShopId: event.shopifyShopId });
     if (event.topic === "subscription_contracts/create") {
       const id = optionalString(event.payload, "admin_graphql_api_id");
       if (!id) throw new Error("missing contract");
@@ -94,7 +94,7 @@ class MemoryRepository implements ShopifyEventRepository {
       if (existingAttempt >= 0) this.attempts[existingAttempt] = attempt;
       else this.attempts.push(attempt);
     } else if (event.topic === "app/uninstalled") {
-      this.shops.set(event.shop, { id: "shop-1", isActive: false });
+      this.shops.set(event.shop, { ...this.shops.get(event.shop)!, isActive: false });
     }
     if (event.contract) {
       const currentLines = this.lines.get(event.contract.id) ?? new Map();
@@ -295,6 +295,41 @@ test("rejects an event for an unknown shop", async () => {
   );
 });
 
+test("canonicaliza shopId numérico antes de processar evento", async () => {
+  const repository = new MemoryRepository();
+  const service = new ShopifyEventIngestionService(repository);
+  await service.ingest({ ...body("app/uninstalled", "numeric-shop-id"), shopifyShopId: "1" });
+  assert.equal(repository.processCount, 1);
+  assert.equal(repository.shops.get("known.myshopify.com")?.shopifyShopId, "gid://shopify/Shop/1");
+});
+
+test("rejeita shopId diferente em create update billing e uninstall sem persistir evento", async (context) => {
+  const topics = [
+    "subscription_contracts/create",
+    "subscription_contracts/update",
+    "subscription_billing_attempts/success",
+    "subscription_billing_attempts/failure",
+    "subscription_billing_attempts/challenged",
+    "app/uninstalled",
+  ];
+  for (const topic of topics) {
+    await context.test(topic, async () => {
+      const repository = new MemoryRepository();
+      const service = new ShopifyEventIngestionService(repository);
+      const payload = topic.startsWith("subscription_billing_attempts/")
+        ? { admin_graphql_api_subscription_contract_id: contractId }
+        : { admin_graphql_api_id: contractId };
+      await assert.rejects(
+        service.ingest({ ...body(topic, `mismatch-${topic}`, payload), shopifyShopId: "gid://shopify/Shop/2" }),
+        ShopifyShopIdentityMismatchError,
+      );
+      assert.equal(repository.events.size, 0);
+      assert.equal(repository.processCount, 0);
+      assert.equal(repository.shops.get("known.myshopify.com")?.shopifyShopId, "gid://shopify/Shop/1");
+    });
+  }
+});
+
 test("rejects an invalid API key using constant-time digests", () => {
   assert.equal(secureApiKeyMatches("wrong", "expected"), false);
   assert.equal(secureApiKeyMatches("expected", "expected"), true);
@@ -420,7 +455,7 @@ function linkedContractEvent(webhookId: string, lineNumbers: number[], topic = "
   const event = body(topic, webhookId, { admin_graphql_api_id: contractId, status: "active" });
   return {
     ...event,
-    shopifyShopId: "gid://shopify/Shop/123",
+    shopifyShopId: "gid://shopify/Shop/1",
     shopifyEventId: "shopify-event-shared",
     contract: {
       ...event.contract!,
@@ -440,7 +475,7 @@ function linkedContractEvent(webhookId: string, lineNumbers: number[], topic = "
 test("stores the Shopify shop, event and revision identifiers", async () => {
   const repository = new MemoryRepository();
   await new ShopifyEventIngestionService(repository).ingest(linkedContractEvent("delivery-link-1", [1]));
-  assert.equal(repository.shops.get("known.myshopify.com")?.shopifyShopId, "gid://shopify/Shop/123");
+  assert.equal(repository.shops.get("known.myshopify.com")?.shopifyShopId, "gid://shopify/Shop/1");
   assert.equal(repository.events.get("delivery-link-1")?.shopifyEventId, "shopify-event-shared");
   assert.equal(repository.contracts.get(contractId)?.shopifyRevisionId, "revision-9");
 });

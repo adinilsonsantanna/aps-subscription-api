@@ -2,8 +2,10 @@ import { Prisma } from "@prisma/client";
 import { ShopifyEventRepository } from "./shopify-event.repository";
 import {
   ShopifyShopNotFoundError,
+  ShopifyShopIdentityMismatchError,
   validateIncomingShopifyEvent,
 } from "./shopify-event.types";
+import { canonicalizeShopId } from "../../utils/shopId";
 
 export interface ShopifyEventIngestionResult {
   duplicate: boolean;
@@ -24,6 +26,9 @@ export class ShopifyEventIngestionService {
     const shop = await this.repository.findShopByDomain(event.shop);
     if (!shop) {
       throw new ShopifyShopNotFoundError("Shop not found");
+    }
+    if (event.shopifyShopId && (!shop.shopifyShopId || canonicalizeShopId(shop.shopifyShopId) !== canonicalizeShopId(event.shopifyShopId))) {
+      throw new ShopifyShopIdentityMismatchError("Shop event identity does not match the registered shop");
     }
 
     let duplicate = Boolean(existingEvent);

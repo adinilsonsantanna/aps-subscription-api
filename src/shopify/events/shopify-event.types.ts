@@ -7,6 +7,8 @@ export const acceptedShopifyEventTopics = [
   "app/uninstalled",
 ] as const;
 
+import { canonicalizeShopId } from "../../utils/shopId";
+
 export type ShopifyEventTopic = (typeof acceptedShopifyEventTopics)[number];
 export type ShopifyEventPayload = Record<string, unknown>;
 
@@ -37,6 +39,7 @@ export interface NormalizedShopifyContract {
 
 export class ShopifyEventValidationError extends Error {}
 export class ShopifyShopNotFoundError extends Error {}
+export class ShopifyShopIdentityMismatchError extends Error {}
 
 const sensitivePayloadKeys = new Set([
   "access_token",
@@ -108,7 +111,14 @@ export function validateIncomingShopifyEvent(value: unknown): IncomingShopifyEve
   const body = value as Record<string, unknown>;
   const shop = typeof body.shop === "string" ? body.shop.trim().toLowerCase() : "";
   const webhookId = typeof body.webhookId === "string" ? body.webhookId.trim() : "";
-  const shopifyShopId = typeof body.shopifyShopId === "string" ? body.shopifyShopId.trim() : undefined;
+  let shopifyShopId: string | undefined;
+  if (typeof body.shopifyShopId === "string") {
+    try {
+      shopifyShopId = canonicalizeShopId(body.shopifyShopId.trim());
+    } catch {
+      throw new ShopifyEventValidationError("Invalid shopifyShopId");
+    }
+  }
   const shopifyEventId = typeof body.shopifyEventId === "string" ? body.shopifyEventId.trim() : undefined;
 
   if (!/^[a-z0-9][a-z0-9.-]{1,251}[a-z0-9]$/.test(shop)) {
@@ -120,7 +130,6 @@ export function validateIncomingShopifyEvent(value: unknown): IncomingShopifyEve
   if (!webhookId || webhookId.length > 255) {
     throw new ShopifyEventValidationError("Invalid webhookId");
   }
-  if (shopifyShopId && !/^gid:\/\/shopify\/Shop\/[^/]+$/.test(shopifyShopId)) throw new ShopifyEventValidationError("Invalid shopifyShopId");
   if (shopifyEventId && shopifyEventId.length > 255) throw new ShopifyEventValidationError("Invalid shopifyEventId");
   if (!body.payload || typeof body.payload !== "object" || Array.isArray(body.payload)) {
     throw new ShopifyEventValidationError("Invalid payload");

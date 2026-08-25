@@ -29,7 +29,7 @@ class FakePrisma {
       update: async ({ where, data }: any) => { const row = this.rows.find((item) => item.id === where.id)!; Object.assign(row, data, { updatedAt: new Date() }); return row; },
       updateMany: async ({ where, data }: any) => {
         if (this.failNextUpdate) { this.failNextUpdate = false; throw new Error("forced rollback"); }
-        const row = this.rows.find((item) => item.id === where.id && item.domain === where.domain && item.shopifyShopId === where.shopifyShopId && item.isActive === where.isActive && item.installationGeneration === where.installationGeneration);
+        const row = this.rows.find((item) => item.id === where.id && item.domain === where.domain && item.isActive === where.isActive && item.installationGeneration === where.installationGeneration && (where.shopifyShopId === undefined || item.shopifyShopId === where.shopifyShopId));
         if (!row) return { count: 0 };
         Object.assign(row, data, { installationGeneration: row.installationGeneration + (data.installationGeneration?.increment ?? 0), updatedAt: new Date() });
         return { count: 1 };

@@ -8,7 +8,7 @@ function fixture(options: { installedAt?: Date; uninstalledAt?: Date | null; gen
   let cleanup = 0;
   const tx: any = {
     shop: {
-      findUnique: async () => ({ installationGeneration: shop.installationGeneration }),
+      findUnique: async () => ({ installationGeneration: shop.installationGeneration, shopifyShopId: shop.shopifyShopId }),
       updateMany: async ({ where, data }: any) => {
         options.beforeUpdate?.();
         const eligible = shop.isActive && where.domain === shop.domain && where.shopifyShopId === shop.shopifyShopId && where.installationGeneration === shop.installationGeneration && (!shop.lastInstalledAt || shop.lastInstalledAt <= where.AND[0].OR[1].lastInstalledAt.lte) && (!shop.lastUninstalledAt || shop.lastUninstalledAt < where.AND[1].OR[1].lastUninstalledAt.lt);
@@ -31,3 +31,5 @@ test("redelivery de uninstall não repete efeitos", async () => { const at = new
 test("triggeredAt ausente é inválido", () => { assert.throws(() => validateIncomingShopifyEvent({ shop: "one.myshopify.com", shopifyShopId: "gid://shopify/Shop/1", topic: "app/uninstalled", webhookId: "w1", payload: {}, receivedAt: "2026-08-25T00:00:00Z" }), ShopifyEventValidationError); });
 test("triggeredAt inválido é inválido", () => { assert.throws(() => validateIncomingShopifyEvent({ shop: "one.myshopify.com", shopifyShopId: "gid://shopify/Shop/1", topic: "app/uninstalled", webhookId: "w1", payload: {}, triggeredAt: "invalid", receivedAt: "2026-08-25T00:00:00Z" }), ShopifyEventValidationError); });
 test("worker perdedor não desativa após mudança de geração", async () => { const f = fixture({ beforeUpdate: () => { f.shop.installationGeneration += 1; } }); await f.repository.processEvent(f.event(new Date("2026-08-24T00:00:00Z")), "shop-1"); assert.equal(f.shop.isActive, true); assert.equal(f.cleanup(), 0); });
+test("uninstall numérico equivalente ao GID canônico desativa", async () => { const f = fixture(); await f.repository.processEvent({ ...f.event(new Date("2026-08-24T00:00:00Z")), shopifyShopId: "1" }, "shop-1"); assert.equal(f.shop.isActive, false); assert.equal(f.cleanup(), 1); });
+test("uninstall de shopId diferente é rejeitado sem cleanup", async () => { const f = fixture(); await assert.rejects(f.repository.processEvent({ ...f.event(new Date("2026-08-24T00:00:00Z")), shopifyShopId: "gid://shopify/Shop/2" }, "shop-1")); assert.equal(f.shop.isActive, true); assert.equal(f.cleanup(), 0); });
