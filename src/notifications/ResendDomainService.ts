@@ -10,7 +10,7 @@ type ProviderDomain = { status?: string; capabilities?: { sending?: string }; re
 const publicDomain = (domain: DomainWithRecords): PublicSendingDomain => ({ id: domain.id, domain: domain.domain, status: domain.status, sendingVerified: domain.sendingVerified, lastCheckedAt: domain.lastCheckedAt, records: domain.records.map(({ purpose, type, name, value, priority, ttl, status }) => ({ purpose, type, name, value, priority, ttl, status })) });
 
 export class ResendDomainService {
-  constructor(private db: PrismaClient = new PrismaClient(), private admin: Resend = new Resend(process.env.RESEND_API_KEY)) {}
+  constructor(private db: PrismaClient = new PrismaClient(), private admin: Resend = new Resend(process.env.RESEND_API_KEY), private now = () => new Date()) {}
   private async context(shopDomain: string) { const shop = await this.db.shop.findUnique({ where: { domain: shopDomain.toLowerCase() } }); if (!shop) throw Object.assign(new Error("shop_not_found"), { statusCode: 404 }); const settings = await this.db.notificationSettings.findUnique({ where: { shopId: shop.id } }); if (!settings?.fromEmail) throw new Error("sender_not_configured"); return { shop, settings, domain: domainFromEmail(settings.fromEmail) }; }
   async get(shopDomain: string): Promise<PublicSendingDomain[]> { const { shop } = await this.context(shopDomain); const values = await this.db.sendingDomain.findMany({ where: { shopId: shop.id, disabledAt: null }, include: { records: { orderBy: { position: "asc" } } }, orderBy: { createdAt: "desc" } }); return values.map(publicDomain); }
   async setup(shopDomain: string): Promise<PublicSendingDomain> {
@@ -20,7 +20,7 @@ export class ResendDomainService {
     if (owned?.providerDomainId && owned.encryptedApiKey) return publicDomain(owned);
     if (!owned?.providerDomainId) { let provider: { id: string; status: string; records?: ProviderRecord[] } | null = null; const domainsApi = this.admin.domains as unknown as { list?: () => Promise<{ data?: { data?: Array<{ id: string; name: string; status: string }> } }> }; if (typeof domainsApi.list === "function") { const listed = await domainsApi.list(), match = listed.data?.data?.find(item => normalizeDomain(item.name) === normalized); if (match) { const recovered = await this.admin.domains.get(match.id); if (!recovered.error && recovered.data) provider = { id: match.id, status: recovered.data.status, records: recovered.data.records }; } } if (!provider) { const created = await this.admin.domains.create({ name: normalized, capabilities: { sending: "enabled", receiving: "disabled" } }); if (created.error || !created.data?.id) throw new Error("resend_domain_create_failed"); provider = { id: created.data.id, status: created.data.status, records: created.data.records }; } const recoveredProvider = provider; owned = await this.db.$transaction(async tx => { const saved = await tx.sendingDomain.upsert({ where: { domain: normalized }, create: { shopId: shop.id, domain: normalized, providerDomainId: recoveredProvider.id, status: recoveredProvider.status }, update: { providerDomainId: recoveredProvider.id, status: recoveredProvider.status, disabledAt: null } }); await this.replaceRecords(tx, saved.id, recoveredProvider.records ?? []); return tx.sendingDomain.findUniqueOrThrow({ where: { id: saved.id }, include: { records: { orderBy: { position: "asc" } } } }); }); }
     if (!owned.providerDomainId) throw new Error("resend_domain_missing_provider_id");
-    const apiKey = await this.admin.apiKeys.create({ name: `shop-${shop.id.slice(-12)}-${Date.now()}`.slice(0, 50), permission: "sending_access", domain_id: owned.providerDomainId });
+    const apiKey = await this.admin.apiKeys.create({ name: `shop-${shop.id.slice(-12)}-${this.now().getTime()}`.slice(0, 50), permission: "sending_access", domain_id: owned.providerDomainId });
     if (apiKey.error || !apiKey.data?.token || !apiKey.data.id) throw new Error("resend_api_key_create_failed");
     try {
       const pending = await this.db.sendingDomain.update({ where: { id: owned.id }, data: { pendingEncryptedApiKey: encryptCredential(apiKey.data.token), pendingApiKeyId: apiKey.data.id, credentialStatus: "PENDING_VALID" } });
@@ -31,7 +31,7 @@ export class ResendDomainService {
   }
   async rotate(shopDomain: string): Promise<PublicSendingDomain> {
     let domain = await this.single(shopDomain); if (!domain.providerDomainId || !domain.apiKeyId || !domain.sendingVerified) throw new Error("domain_credential_not_active");
-    const now = new Date(), operationId = domain.credentialOperationId || randomUUID(), expired = !domain.credentialLeaseExpiresAt || domain.credentialLeaseExpiresAt < now;
+    const now = this.now(), operationId = domain.credentialOperationId || randomUUID(), expired = !domain.credentialLeaseExpiresAt || domain.credentialLeaseExpiresAt < now;
     if (domain.pendingApiKeyId && domain.pendingEncryptedApiKey) return this.activatePending(domain, now);
     if (domain.credentialStatus === "CREATED" && expired) await this.revokeOrphanedOperation(domain, operationId);
     const claim = await this.db.sendingDomain.updateMany({ where: { id: domain.id, OR: [{ credentialStatus: { in: ["ACTIVE", "REVOCATION_QUEUED", "active", "revocation_pending", "ABANDONED"] } }, { credentialStatus: "CREATED", credentialLeaseExpiresAt: { lt: now } }] }, data: { credentialStatus: "CREATED", credentialOperationId: operationId, credentialClaimedAt: now, credentialLeaseExpiresAt: new Date(now.getTime() + 60_000), credentialAttemptCount: { increment: 1 }, credentialError: null } });
@@ -44,7 +44,7 @@ export class ResendDomainService {
     try { return await this.activatePending(domain, now); }
     catch (error) { await this.db.sendingDomain.updateMany({ where: { id: domain.id, pendingApiKeyId: apiKey.data.id }, data: { credentialLeaseExpiresAt: new Date(0), credentialError: error instanceof Error ? error.message.slice(0, 250) : "activation_failed" } }); throw error; }
   }
-  private async activatePending(domain: SendingDomain, now = new Date()) {
+  private async activatePending(domain: SendingDomain, now = this.now()) {
     if (!domain.pendingApiKeyId || !domain.pendingEncryptedApiKey || !domain.apiKeyId) throw new Error("pending_credential_incomplete");
     const pendingId = domain.pendingApiKeyId, oldId = domain.apiKeyId;
     const dangerousCleanup = await this.db.sendingCredentialCleanupJob.findFirst({ where: { sendingDomainId: domain.id, providerApiKeyId: pendingId, status: { in: ["processing", "succeeded"] } }, select: { id: true } });

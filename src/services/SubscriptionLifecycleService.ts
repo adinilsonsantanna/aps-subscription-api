@@ -17,6 +17,7 @@ export class SubscriptionLifecycleService {
     private stripe = new StripeSubscriptionService(),
     private fetchFn: Fetch = fetch,
     private notifications = new NotificationEventService(prisma),
+    private now = () => new Date(),
   ) {}
 
   async execute(subscriptionId: string, action: LifecycleActionName, idempotencyKey: string, actor = "CUSTOMER") {
@@ -39,7 +40,7 @@ export class SubscriptionLifecycleService {
 
     let record = existing;
     if (existing) {
-      const staleAt = new Date(Date.now() - 60_000);
+      const staleAt = new Date(this.now().getTime() - 60_000);
       const recoverable = existing.status === "failed" || ((existing.status === "pending" || existing.status === "recovering") && existing.updatedAt < staleAt);
       if (!recoverable) throw new LifecycleError(409, "action_in_progress", "Lifecycle action is already pending");
       const claimed = await this.prisma.subscriptionLifecycleAction.updateMany({ where: { id: existing.id, status: existing.status, updatedAt: existing.updatedAt }, data: { status: "recovering", completedAt: null, errorCode: null, errorMessage: null, httpStatus: null } });
@@ -68,7 +69,7 @@ export class SubscriptionLifecycleService {
     } catch (error) {
       const safe = error instanceof LifecycleError ? error : new LifecycleError(502, "external_gateway_error", "External gateway request failed");
       if (externalConfirmed) throw new LifecycleError(503, "local_persistence_pending", "External action succeeded and local reconciliation is pending");
-      await this.prisma.subscriptionLifecycleAction.update({ where: { id: record!.id }, data: { status: "failed", errorCode: safe.code, errorMessage: safe.message.slice(0, 250), httpStatus: safe.statusCode, completedAt: new Date() } });
+      await this.prisma.subscriptionLifecycleAction.update({ where: { id: record!.id }, data: { status: "failed", errorCode: safe.code, errorMessage: safe.message.slice(0, 250), httpStatus: safe.statusCode, completedAt: this.now() } });
       throw safe;
     }
   }
@@ -76,7 +77,7 @@ export class SubscriptionLifecycleService {
   private async finalizeLocal(record: { id: string; idempotencyKey?: string; action: string; gateway: string; externalStatus: string | null }, subscription: any, action: LifecycleActionName, actor: string, duplicate: boolean) {
     const targetStatus = TARGET[action], updateStatus = subscription.gateway === "stripe";
     const completed = await this.prisma.$transaction(async (tx) => {
-      const updatedAction = await tx.subscriptionLifecycleAction.update({ where: { id: record.id }, data: { status: "succeeded", completedAt: new Date(), errorCode: null, errorMessage: null, httpStatus: null } });
+      const updatedAction = await tx.subscriptionLifecycleAction.update({ where: { id: record.id }, data: { status: "succeeded", completedAt: this.now(), errorCode: null, errorMessage: null, httpStatus: null } });
       if (updateStatus) await tx.subscription.update({ where: { id: subscription.id }, data: { status: targetStatus } });
       await tx.subscriptionStatusHistory.upsert({ where: { source_sourceEventId: { source: "lifecycle_action", sourceEventId: `lifecycle:${record.id}` } }, create: { subscriptionId: subscription.id, previousStatus: subscription.status, newStatus: updateStatus ? targetStatus : (subscription.status || targetStatus), source: "lifecycle_action", sourceEventId: `lifecycle:${record.id}`, lifecycleActionId: record.id, actor }, update: {} });
       return updatedAction;

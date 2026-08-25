@@ -326,6 +326,16 @@ test("returns forbidden from the middleware for an invalid API key", () => {
   assert.equal(statusCode, 403);
 });
 
+test("returns unauthorized from the middleware when x-api-key is absent", () => {
+  const previousApiKey = process.env.API_KEY;
+  process.env.API_KEY = "expected";
+  let statusCode = 0;
+  const response = { status(code: number) { statusCode = code; return this; }, json() { return this; } };
+  apiAuth({ headers: {} } as never, response as never, (() => assert.fail("next must not be called")) as never);
+  if (previousApiKey === undefined) delete process.env.API_KEY; else process.env.API_KEY = previousApiKey;
+  assert.equal(statusCode, 401);
+});
+
 test("records a challenged billing attempt without cancelling the contract", async () => {
   const repository = new MemoryRepository();
   const service = new ShopifyEventIngestionService(repository);

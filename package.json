@@ -14,7 +14,11 @@
     "migrate:deploy": "prisma migrate deploy",
     "postinstall": "prisma generate",
     "start": "node dist/server.js",
-    "test": "npm run build && node --test dist/src/**/__tests__/*.test.js"
+    "test": "npm run build && node --test dist/src/**/__tests__/*.test.js",
+    "test:integration": "npm run build && node scripts/run-node-tests.mjs dist/src/integration/__tests__/postgres-transaction.integration.test.js dist/src/retry/__tests__/retry-engine.service.test.js dist/src/stripe/__tests__/subscription-order-prisma.test.js dist/src/shopify/events/__tests__/shopify-notification-integration.test.js",
+    "test:contract": "npm run build && node scripts/run-node-tests.mjs dist/src/contracts/__tests__/subscription-cycle.contract.test.js dist/src/shopify/events/__tests__/shopify-event.service.test.js dist/src/controllers/__tests__/retry-cron.controller.test.js",
+    "test:full-cycle": "npm run build && node scripts/run-node-tests.mjs dist/src/full-cycle/__tests__/full-cycle.production.test.js dist/src/retry/__tests__/retry-engine.service.test.js dist/src/notifications/__tests__/notifications.test.js dist/src/services/__tests__/subscription-lifecycle.service.test.js",
+    "test:live:dry-run": "node --test --test-reporter=tap scripts/live-subscription-smoke.test.mjs"
   },
   "repository": {
     "type": "git",
