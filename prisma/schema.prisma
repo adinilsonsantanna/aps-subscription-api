@@ -19,6 +19,7 @@ model Shop {
   subscriptions              Subscription[]
   webhooks                   WebhookEvent[]
   billingAttempts            SubscriptionBillingAttempt[]
+  billingReconciliations     BillingReconciliationAudit[]
   retrySettings              BillingRetrySettings?
   retryCycles                BillingRetryCycle[]
   retryJobs                  BillingRetryJob[]
@@ -67,6 +68,7 @@ model Subscription {
   lastGatewayStatusEventAt  DateTime?
   lastGatewayPaymentEventAt DateTime?
   billingAttempts           SubscriptionBillingAttempt[]
+  billingReconciliations    BillingReconciliationAudit[]
   lifecycleActions          SubscriptionLifecycleAction[]
   statusHistory             SubscriptionStatusHistory[]
   retryCycles               BillingRetryCycle[]
@@ -438,19 +440,20 @@ model WebhookEvent {
 }
 
 model SubscriptionLine {
-  id                        String       @id @default(cuid())
+  id                        String                       @id @default(cuid())
   subscriptionId            String
-  subscription              Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  subscription              Subscription                 @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
   shopifySubscriptionLineId String
   shopifyProductId          String?
   shopifyVariantId          String?
   shopifySellingPlanId      String?
   quantity                  Int
-  currentPrice              Decimal?     @db.Decimal(10, 2)
+  currentPrice              Decimal?                     @db.Decimal(10, 2)
   currencyCode              String?
-  isActive                  Boolean      @default(true)
-  createdAt                 DateTime     @default(now())
-  updatedAt                 DateTime     @updatedAt
+  isActive                  Boolean                      @default(true)
+  createdAt                 DateTime                     @default(now())
+  updatedAt                 DateTime                     @updatedAt
+  reconciliationAudits      BillingReconciliationAudit[]
 
   @@unique([subscriptionId, shopifySubscriptionLineId])
   @@index([shopifyProductId])
@@ -458,31 +461,57 @@ model SubscriptionLine {
   @@index([shopifySellingPlanId])
 }
 
-model SubscriptionBillingAttempt {
-  id                      String       @id @default(cuid())
+model BillingReconciliationAudit {
+  id                      String                     @id @default(cuid())
   shopId                  String
-  shop                    Shop         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shop                    Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
   subscriptionId          String
-  subscription            Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
-  shopifyContractId       String
-  shopifyBillingAttemptId String?
-  idempotencyKey          String?
-  webhookEventId          String?      @unique
-  status                  String
-  errorCode               String?
-  errorMessage            String?
-  shopifyOrderId          String?
-  nextActionUrl           String?
-  attemptedAt             DateTime?
-  cycleOriginTime         DateTime?
-  completedAt             DateTime?
-  orderAmount             Decimal?     @db.Decimal(10, 2)
-  orderCurrencyCode       String?
-  reconciliationStatus    String       @default("pending")
-  reconciliationAttempts  Int          @default(0)
-  reconciliationError     String?
-  createdAt               DateTime     @default(now())
-  updatedAt               DateTime     @updatedAt
+  subscription            Subscription               @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  billingAttemptId        String
+  billingAttempt          SubscriptionBillingAttempt @relation(fields: [billingAttemptId], references: [id], onDelete: Cascade)
+  shopifyBillingAttemptId String
+  shopifyOrderId          String
+  cycleOriginTime         DateTime
+  correlationId           String
+  payloadHash             String
+  before                  Json
+  after                   Json
+  createdAt               DateTime                   @default(now())
+  subscriptionLine        SubscriptionLine?          @relation(fields: [subscriptionLineId], references: [id])
+  subscriptionLineId      String?
+
+  @@unique([billingAttemptId])
+  @@unique([shopId, shopifyBillingAttemptId, cycleOriginTime])
+  @@index([subscriptionId, cycleOriginTime])
+  @@index([correlationId])
+}
+
+model SubscriptionBillingAttempt {
+  id                         String                      @id @default(cuid())
+  shopId                     String
+  shop                       Shop                        @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  subscriptionId             String
+  subscription               Subscription                @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  shopifyContractId          String
+  shopifyBillingAttemptId    String?
+  idempotencyKey             String?
+  webhookEventId             String?                     @unique
+  status                     String
+  errorCode                  String?
+  errorMessage               String?
+  shopifyOrderId             String?
+  nextActionUrl              String?
+  attemptedAt                DateTime?
+  cycleOriginTime            DateTime?
+  completedAt                DateTime?
+  orderAmount                Decimal?                    @db.Decimal(10, 2)
+  orderCurrencyCode          String?
+  reconciliationStatus       String                      @default("pending")
+  reconciliationAttempts     Int                         @default(0)
+  reconciliationError        String?
+  createdAt                  DateTime                    @default(now())
+  updatedAt                  DateTime                    @updatedAt
+  billingReconciliationAudit BillingReconciliationAudit?
 
   @@unique([shopId, shopifyBillingAttemptId])
   @@unique([shopId, idempotencyKey])

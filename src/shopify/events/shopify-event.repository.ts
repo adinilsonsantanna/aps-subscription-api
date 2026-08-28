@@ -14,6 +14,7 @@ import { NotificationEventService } from "../../notifications/NotificationEventS
 import { canonicalBillingSourceKey } from "../../notifications/billing-notification-identity";
 import { canonicalizeShopId } from "../../utils/shopId";
 import { ShopifyShopIdentityMismatchError } from "./shopify-event.types";
+import { ShopifyBillingReconciliationPendingError } from "./shopify-event.types";
 
 export interface ShopifyEventShop {
   id: string;
@@ -186,7 +187,7 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
   async processEvent(event: IncomingShopifyEvent, shopId: string) {
     let contractTransition: { eventType: string; sourceKey: string; subscriptionId: string; customerEmail: string | null } | null = null;
     let reconciliationPending = false;
-    await this.prisma.$transaction(async (transaction) => {
+    reconciliationPending = await this.prisma.$transaction(async (transaction) => {
       const canonicalEventShopId = event.shopifyShopId ? canonicalizeShopId(event.shopifyShopId) : undefined;
       if (event.shopifyShopId) {
         const storedIdentity = await transaction.shop.findUnique({ where: { id: shopId }, select: { shopifyShopId: true } });
@@ -264,12 +265,13 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
           break;
       }
 
-      await transaction.webhookEvent.update({
+      if (!reconciliationPending) await transaction.webhookEvent.update({
         where: { eventId: event.webhookId },
         data: { processed: true, processedAt: new Date(), errorMessage: null, ...(event.shopifyEventId && { shopifyEventId: event.shopifyEventId }) },
       });
-    if (reconciliationPending) throw new Error("shopify_billing_attempt_reconciliation_pending");
+      return reconciliationPending;
       });
+    if (reconciliationPending) throw new ShopifyBillingReconciliationPendingError("shopify_billing_attempt_reconciliation_pending");
     if (contractTransition) { const transition = contractTransition as { eventType: string; sourceKey: string; subscriptionId: string; customerEmail: string | null }; await this.notifications.emit({ shopId, eventType: transition.eventType, sourceKey: transition.sourceKey, payload: { subscriptionId: transition.subscriptionId, contractId: event.contract!.id, status: event.contract!.status.toLowerCase() }, customerEmail: transition.customerEmail, occurredAt: event.receivedAt }); }
     if (event.topic === "subscription_billing_attempts/success" || event.topic === "subscription_billing_attempts/failure") {
       const attemptData = billingAttemptDataFromPayload(event.topic, event.payload), contractId = contractIdFromPayload(event.payload);

@@ -104,6 +104,7 @@ export interface NormalizedShopifyContract {
 export class ShopifyEventValidationError extends Error {}
 export class ShopifyShopNotFoundError extends Error {}
 export class ShopifyShopIdentityMismatchError extends Error {}
+export class ShopifyBillingReconciliationPendingError extends Error {}
 
 const sensitivePayloadKeys = new Set([
   "access_token",
