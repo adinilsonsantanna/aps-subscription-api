@@ -8,6 +8,7 @@ import shopifyEventRoutes from "./shopify-events.routes";
 import retrySettingsRoutes from "./retry-settings.routes";
 import cronRoutes from "./cron.routes";
 import notificationRoutes from "./notifications.routes";
+import administrativeReconciliationRoutes from "./administrative-reconciliation.routes";
 
 const router = Router();
 
@@ -22,6 +23,7 @@ router.use("/api/subscriptions", apiAuth, json(), subscriptionRoutes);
 router.use("/api/shopify", apiAuth, json({ limit: "1mb" }), shopifyEventRoutes);
 router.use("/api/retry-settings", apiAuth, json({ limit: "32kb" }), retrySettingsRoutes);
 router.use("/api/notifications", apiAuth, json({ limit: "64kb" }), notificationRoutes);
+router.use("/api/administrative-reconciliation", apiAuth, json({ limit: "32kb" }), administrativeReconciliationRoutes);
 router.use("/api/cron", cronRoutes);
 
 // Webhooks sem JSON global

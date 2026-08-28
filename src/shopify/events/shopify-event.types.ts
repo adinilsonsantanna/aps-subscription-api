@@ -20,8 +20,72 @@ export interface IncomingShopifyEvent {
   webhookId: string;
   payload: ShopifyEventPayload;
   contract?: NormalizedShopifyContract;
+  billingAttempt?: NormalizedShopifyBillingAttempt;
   receivedAt: Date;
   triggeredAt?: Date;
+}
+
+export interface NormalizedShopifyBillingAttempt {
+  id: string;
+  idempotencyKey: string;
+  cycleOriginTime?: string;
+  createdAt?: string;
+  completedAt?: string;
+  state: "pending" | "succeeded" | "failed";
+  contractId: string;
+  nextBillingAt?: string;
+  order?: { id: string; processedAt?: string; test: boolean; financialStatus?: string; amount: string; currencyCode: string; subtotal?: string; shipping?: string; tax?: string };
+  reconciliationStatus: "complete" | "pending";
+}
+
+function validatedBillingAttempt(value: unknown): NormalizedShopifyBillingAttempt {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new ShopifyEventValidationError("Invalid billing attempt");
+  const item = value as Record<string, unknown>;
+  const required = (candidate: unknown) => {
+    if (typeof candidate !== "string" || !candidate.trim()) throw new ShopifyEventValidationError("Invalid billing attempt");
+    return candidate.trim();
+  };
+  const optional = (candidate: unknown) => typeof candidate === "string" && candidate.trim() ? candidate.trim() : undefined;
+  const gid = (candidate: unknown, resource: string) => {
+    const result = required(candidate);
+    if (!new RegExp(`^gid://shopify/${resource}/[^/]+$`).test(result)) throw new ShopifyEventValidationError("Invalid billing attempt identifier");
+    return result;
+  };
+  const date = (candidate: unknown) => {
+    const result = optional(candidate);
+    if (result && Number.isNaN(new Date(result).getTime())) throw new ShopifyEventValidationError("Invalid billing attempt date");
+    return result;
+  };
+  const money = (candidate: unknown) => {
+    const result = required(candidate);
+    if (!/^\d+(?:\.\d+)?$/.test(result)) throw new ShopifyEventValidationError("Invalid billing attempt amount");
+    return result;
+  };
+  const state = required(item.state);
+  const reconciliationStatus = required(item.reconciliationStatus);
+  if (!["pending", "succeeded", "failed"].includes(state) || !["complete", "pending"].includes(reconciliationStatus)) throw new ShopifyEventValidationError("Invalid billing attempt status");
+  const orderValue = item.order && typeof item.order === "object" && !Array.isArray(item.order) ? item.order as Record<string, unknown> : undefined;
+  const order = orderValue ? {
+    id: gid(orderValue.id, "Order"),
+    ...(date(orderValue.processedAt) && { processedAt: date(orderValue.processedAt) }),
+    test: orderValue.test === true,
+    ...(optional(orderValue.financialStatus) && { financialStatus: optional(orderValue.financialStatus) }),
+    amount: money(orderValue.amount),
+    currencyCode: required(orderValue.currencyCode).toUpperCase(),
+    ...(optional(orderValue.subtotal) && { subtotal: money(orderValue.subtotal) }),
+    ...(optional(orderValue.shipping) && { shipping: money(orderValue.shipping) }),
+    ...(optional(orderValue.tax) && { tax: money(orderValue.tax) }),
+  } : undefined;
+  if (order && !/^[A-Z]{3}$/.test(order.currencyCode)) throw new ShopifyEventValidationError("Invalid billing attempt currency");
+  if (state === "succeeded" && reconciliationStatus === "complete" && (!order || !date(item.completedAt) || !date(item.cycleOriginTime))) throw new ShopifyEventValidationError("Incomplete successful billing attempt");
+  return {
+    id: gid(item.id, "SubscriptionBillingAttempt"), idempotencyKey: required(item.idempotencyKey),
+    ...(date(item.cycleOriginTime) && { cycleOriginTime: date(item.cycleOriginTime) }),
+    ...(date(item.createdAt) && { createdAt: date(item.createdAt) }), ...(date(item.completedAt) && { completedAt: date(item.completedAt) }),
+    state: state as NormalizedShopifyBillingAttempt["state"], contractId: gid(item.contractId, "SubscriptionContract"),
+    ...(date(item.nextBillingAt) && { nextBillingAt: date(item.nextBillingAt) }), ...(order && { order }),
+    reconciliationStatus: reconciliationStatus as NormalizedShopifyBillingAttempt["reconciliationStatus"],
+  };
 }
 
 export interface NormalizedShopifyContract {
@@ -40,6 +104,7 @@ export interface NormalizedShopifyContract {
 export class ShopifyEventValidationError extends Error {}
 export class ShopifyShopNotFoundError extends Error {}
 export class ShopifyShopIdentityMismatchError extends Error {}
+export class ShopifyBillingReconciliationPendingError extends Error {}
 
 const sensitivePayloadKeys = new Set([
   "access_token",
@@ -153,6 +218,9 @@ export function validateIncomingShopifyEvent(value: unknown): IncomingShopifyEve
     payload: sanitizePayloadValue(body.payload) as ShopifyEventPayload,
     ...((body.topic === "subscription_contracts/create" || body.topic === "subscription_contracts/update")
       ? { contract: validatedContract(body.contract) }
+      : {}),
+    ...(String(body.topic).startsWith("subscription_billing_attempts/") && body.billingAttempt
+      ? { billingAttempt: validatedBillingAttempt(body.billingAttempt) }
       : {}),
     receivedAt,
     ...(triggeredAt && { triggeredAt }),
