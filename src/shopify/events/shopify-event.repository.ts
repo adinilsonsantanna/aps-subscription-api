@@ -135,6 +135,23 @@ export function billingAttemptDataFromPayload(
   };
 }
 
+export function reconciledBillingAttemptData(event: IncomingShopifyEvent) {
+  const raw = billingAttemptDataFromPayload(event.topic as Extract<ShopifyEventTopic, `subscription_billing_attempts/${string}`>, event.payload);
+  const enriched = event.billingAttempt;
+  return {
+    ...raw,
+    shopifyBillingAttemptId: enriched?.id ?? raw.shopifyBillingAttemptId,
+    idempotencyKey: enriched?.idempotencyKey ?? raw.idempotencyKey,
+    shopifyOrderId: enriched?.order?.id ?? raw.shopifyOrderId,
+    attemptedAt: enriched?.completedAt ? new Date(enriched.completedAt) : event.triggeredAt,
+    cycleOriginTime: enriched?.cycleOriginTime ? new Date(enriched.cycleOriginTime) : raw.billingCycleAt,
+    completedAt: enriched?.completedAt ? new Date(enriched.completedAt) : undefined,
+    orderAmount: enriched?.order?.amount,
+    orderCurrencyCode: enriched?.order?.currencyCode,
+    reconciliationStatus: enriched?.reconciliationStatus === "complete" ? "complete" : "pending",
+  };
+}
+
 export class PrismaShopifyEventRepository implements ShopifyEventRepository {
   constructor(private readonly prisma = new PrismaClient(), private readonly notifications = new NotificationEventService(prisma)) {}
 
@@ -168,6 +185,7 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
 
   async processEvent(event: IncomingShopifyEvent, shopId: string) {
     let contractTransition: { eventType: string; sourceKey: string; subscriptionId: string; customerEmail: string | null } | null = null;
+    let reconciliationPending = false;
     await this.prisma.$transaction(async (transaction) => {
       const canonicalEventShopId = event.shopifyShopId ? canonicalizeShopId(event.shopifyShopId) : undefined;
       if (event.shopifyShopId) {
@@ -186,10 +204,9 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
         case "subscription_billing_attempts/success":
         case "subscription_billing_attempts/failure":
         case "subscription_billing_attempts/challenged":
-          await this.recordBillingAttempt(
+          reconciliationPending = await this.recordBillingAttempt(
             transaction,
-            event.topic,
-            event.payload,
+            event,
             shopId,
             event.webhookId,
           );
@@ -251,6 +268,7 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
         where: { eventId: event.webhookId },
         data: { processed: true, processedAt: new Date(), errorMessage: null, ...(event.shopifyEventId && { shopifyEventId: event.shopifyEventId }) },
       });
+    if (reconciliationPending) throw new Error("shopify_billing_attempt_reconciliation_pending");
       });
     if (contractTransition) { const transition = contractTransition as { eventType: string; sourceKey: string; subscriptionId: string; customerEmail: string | null }; await this.notifications.emit({ shopId, eventType: transition.eventType, sourceKey: transition.sourceKey, payload: { subscriptionId: transition.subscriptionId, contractId: event.contract!.id, status: event.contract!.status.toLowerCase() }, customerEmail: transition.customerEmail, occurredAt: event.receivedAt }); }
     if (event.topic === "subscription_billing_attempts/success" || event.topic === "subscription_billing_attempts/failure") {
@@ -372,12 +390,13 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
 
   private async recordBillingAttempt(
     transaction: Prisma.TransactionClient,
-    topic: Extract<ShopifyEventTopic, `subscription_billing_attempts/${string}`>,
-    payload: ShopifyEventPayload,
+    event: IncomingShopifyEvent,
     shopId: string,
     webhookEventId: string,
   ) {
-    const shopifyContractId = contractIdFromPayload(payload);
+    const topic = event.topic as Extract<ShopifyEventTopic, `subscription_billing_attempts/${string}`>;
+    const payload = event.payload;
+    const shopifyContractId = event.billingAttempt?.contractId ?? contractIdFromPayload(payload);
     if (!shopifyContractId) throw new Error("Contract identifier is unavailable");
 
     const subscription = await transaction.subscription.upsert({
@@ -387,14 +406,19 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
       select: { id: true, status: true },
     });
 
-    const attempt = billingAttemptDataFromPayload(topic, payload);
-    const { billingCycleAt: _billingCycleAt, ...persistedAttempt } = attempt;
+    const enriched = event.billingAttempt;
+    const attempt = reconciledBillingAttemptData(event);
+    const { billingCycleAt: _billingCycleAt, orderAmount, orderCurrencyCode, ...persistedAttempt } = attempt;
     const data = {
       shopId,
       subscriptionId: subscription.id,
       shopifyContractId,
       webhookEventId,
       ...persistedAttempt,
+      orderAmount,
+      orderCurrencyCode,
+      reconciliationAttempts: { increment: 1 },
+      reconciliationError: attempt.reconciliationStatus === "complete" ? null : "shopify_order_enrichment_unavailable",
     };
 
     const existingAttempt = await transaction.subscriptionBillingAttempt.findFirst({
@@ -409,27 +433,34 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
       select: { id: true },
     });
     if (existingAttempt) {
-      await transaction.subscriptionBillingAttempt.update({ where: { id: existingAttempt.id }, data: { ...persistedAttempt, webhookEventId } });
+      await transaction.subscriptionBillingAttempt.update({ where: { id: existingAttempt.id }, data: { ...persistedAttempt, orderAmount, orderCurrencyCode, reconciliationAttempts: { increment: 1 }, reconciliationError: attempt.reconciliationStatus === "complete" ? null : "shopify_order_enrichment_unavailable", webhookEventId } });
     } else {
-      await transaction.subscriptionBillingAttempt.create({ data });
+      await transaction.subscriptionBillingAttempt.create({ data: { ...data, reconciliationAttempts: 1 } });
     }
 
-    if (attempt.shopifyOrderId && attempt.status === "succeeded") {
+    const completeSuccess = attempt.status === "succeeded" && attempt.reconciliationStatus === "complete" && attempt.shopifyOrderId && orderAmount && orderCurrencyCode && attempt.attemptedAt && attempt.cycleOriginTime;
+    if (completeSuccess) {
       await transaction.subscriptionOrder.upsert({
         where: { shopifyOrderKey: `${shopId}:${attempt.shopifyOrderId}` },
-        create: { subscriptionId: subscription.id, shopifyOrderId: attempt.shopifyOrderId, shopifyOrderKey: `${shopId}:${attempt.shopifyOrderId}`, gatewayOrderId: attempt.shopifyBillingAttemptId, amount: 0, status: "PAID", processedAt: attempt.attemptedAt ?? new Date() },
-        update: { shopifyOrderId: attempt.shopifyOrderId, gatewayOrderId: attempt.shopifyBillingAttemptId, status: "PAID", processedAt: attempt.attemptedAt ?? new Date() },
+        create: { subscriptionId: subscription.id, shopifyOrderId: attempt.shopifyOrderId!, shopifyOrderKey: `${shopId}:${attempt.shopifyOrderId}`, gatewayOrderId: attempt.shopifyBillingAttemptId, amount: orderAmount!, currencyCode: orderCurrencyCode!, status: enriched?.order?.financialStatus ?? "PAID", processedAt: attempt.attemptedAt! },
+        update: { shopifyOrderId: attempt.shopifyOrderId!, gatewayOrderId: attempt.shopifyBillingAttemptId, amount: orderAmount!, currencyCode: orderCurrencyCode!, status: enriched?.order?.financialStatus ?? "PAID", processedAt: attempt.attemptedAt! },
+      });
+      await transaction.billingRetryCycle.upsert({
+        where: { subscriptionId_billingCycleAt: { subscriptionId: subscription.id, billingCycleAt: attempt.cycleOriginTime! } },
+        create: { shopId, subscriptionId: subscription.id, billingCycleAt: attempt.cycleOriginTime!, status: "succeeded", nextBillingAdvanced: Boolean(enriched?.nextBillingAt) },
+        update: { status: "succeeded", nextBillingAdvanced: Boolean(enriched?.nextBillingAt) },
       });
     }
 
     await transaction.subscription.update({
       where: { id: subscription.id },
-      data: { lastPaymentStatus: attempt.status },
+      data: { lastPaymentStatus: attempt.status, ...(completeSuccess && enriched?.nextBillingAt ? { nextBillingAt: new Date(enriched.nextBillingAt) } : {}) },
     });
     await transaction.subscriptionStatusHistory.upsert({
       where: { source_sourceEventId: { source: "shopify_webhook", sourceEventId: webhookEventId } },
       create: { subscriptionId: subscription.id, newStatus: subscription.status || "active", newPaymentStatus: attempt.status, source: "shopify_webhook", sourceEventId: webhookEventId },
       update: {},
     });
+    return attempt.status === "succeeded" && !completeSuccess;
   }
 }

@@ -50,7 +50,16 @@ export class RetryEngineService {
 
   private async seed(now: Date, take: number) {
     const due = await this.prisma.subscription.findMany({ where: { gateway: "shopify", status: { equals: "active", mode: "insensitive" }, nextBillingAt: { lte: now }, shop: { isActive: true } }, orderBy: { nextBillingAt: "asc" }, take, include: { shop: true } });
-    for (const subscription of due) { const settings = await this.settings(subscription.shopId); const cycle = await this.prisma.billingRetryCycle.upsert({ where: { subscriptionId_billingCycleAt: { subscriptionId: subscription.id, billingCycleAt: subscription.nextBillingAt } }, create: { shopId: subscription.shopId, subscriptionId: subscription.id, billingCycleAt: subscription.nextBillingAt }, update: {} }); await this.prisma.billingRetryJob.upsert({ where: { cycleId_kind_attemptNumber: { cycleId: cycle.id, kind: RetryKind.INVENTORY, attemptNumber: 0 } }, create: { shopId: subscription.shopId, subscriptionId: subscription.id, cycleId: cycle.id, kind: RetryKind.INVENTORY, attemptNumber: 0, maxRetries: settings.inventoryRetryAttempts, scheduledAt: now, idempotencyKey: billingRetryJobKey(subscription.shopId, cycle.id, RetryKind.INVENTORY, 0) }, update: {} }); }
+    for (const subscription of due) {
+      const successfulAttempt = await this.prisma.subscriptionBillingAttempt.findFirst({ where: { subscriptionId: subscription.id, cycleOriginTime: subscription.nextBillingAt, status: "succeeded", reconciliationStatus: "complete" }, select: { id: true } });
+      if (successfulAttempt) {
+        await this.prisma.billingRetryCycle.upsert({ where: { subscriptionId_billingCycleAt: { subscriptionId: subscription.id, billingCycleAt: subscription.nextBillingAt } }, create: { shopId: subscription.shopId, subscriptionId: subscription.id, billingCycleAt: subscription.nextBillingAt, status: "succeeded" }, update: { status: "succeeded" } });
+        continue;
+      }
+      const settings = await this.settings(subscription.shopId); const cycle = await this.prisma.billingRetryCycle.upsert({ where: { subscriptionId_billingCycleAt: { subscriptionId: subscription.id, billingCycleAt: subscription.nextBillingAt } }, create: { shopId: subscription.shopId, subscriptionId: subscription.id, billingCycleAt: subscription.nextBillingAt }, update: {} });
+      if (cycle.status === "succeeded") continue;
+      await this.prisma.billingRetryJob.upsert({ where: { cycleId_kind_attemptNumber: { cycleId: cycle.id, kind: RetryKind.INVENTORY, attemptNumber: 0 } }, create: { shopId: subscription.shopId, subscriptionId: subscription.id, cycleId: cycle.id, kind: RetryKind.INVENTORY, attemptNumber: 0, maxRetries: settings.inventoryRetryAttempts, scheduledAt: now, idempotencyKey: billingRetryJobKey(subscription.shopId, cycle.id, RetryKind.INVENTORY, 0) }, update: {} });
+    }
   }
 
   private async inventorySucceeded(job: any, result: AppResult, now: Date) {

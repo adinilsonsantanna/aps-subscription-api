@@ -474,6 +474,13 @@ model SubscriptionBillingAttempt {
   shopifyOrderId          String?
   nextActionUrl           String?
   attemptedAt             DateTime?
+  cycleOriginTime         DateTime?
+  completedAt             DateTime?
+  orderAmount             Decimal?     @db.Decimal(10, 2)
+  orderCurrencyCode       String?
+  reconciliationStatus    String       @default("pending")
+  reconciliationAttempts  Int          @default(0)
+  reconciliationError     String?
   createdAt               DateTime     @default(now())
   updatedAt               DateTime     @updatedAt
 
@@ -481,4 +488,5 @@ model SubscriptionBillingAttempt {
   @@unique([shopId, idempotencyKey])
   @@index([shopId, shopifyContractId])
   @@index([subscriptionId, status])
+  @@index([subscriptionId, cycleOriginTime, status])
 }
