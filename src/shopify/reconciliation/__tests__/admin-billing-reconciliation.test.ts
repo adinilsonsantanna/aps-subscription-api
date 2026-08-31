@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Prisma } from "@prisma/client";
 import { AdministrativeBillingReconciliationService, AdministrativeReconciliationError, validateAdministrativeBillingReconciliation } from "../admin-billing-reconciliation";
+import { sanitizedAdministrativeReconciliationPrismaError } from "../prisma-observability";
 import { secureApiKeyMatches } from "../../../middlewares/apiAuth";
 
 const input = { shopDomain: "one.myshopify.com", shopId: "gid://shopify/Shop/1", subscriptionContractId: "gid://shopify/SubscriptionContract/10", subscriptionBillingAttemptId: "gid://shopify/SubscriptionBillingAttempt/20", shopifyOrderId: "gid://shopify/Order/30", cycleOriginTime: "2026-09-27T16:00:00.000Z", status: "succeeded", amount: "50.19", currencyCode: "BRL", attemptedAt: "2026-08-28T12:00:01.000Z", completedAt: "2026-08-28T12:00:01.000Z", test: true, gateway: "bogus", correlationId: "scope9-live-cycle", dryRun: false } as const;
@@ -17,7 +18,7 @@ function fixture() {
     billingReconciliationAudit: { findUnique: async ({ where }: any) => audits.find(a => a.billingAttemptId === where.billingAttemptId) ?? null, create: async ({ data }: any) => { if (audits.some(a => a.billingAttemptId === data.billingAttemptId)) throw new Error("duplicate audit"); const value = { id: "audit-1", ...data }; audits.push(value); return value; } },
   };
   const db: any = { $transaction: (callback: any) => { const run = queue.then(() => callback(tx)); queue = run.then(() => undefined, () => undefined); return run; } };
-  return { service: new AdministrativeBillingReconciliationService(db), db, shop, attempt, order, cycle, audits };
+  return { service: new AdministrativeBillingReconciliationService(db), db, tx, shop, attempt, order, cycle, audits };
 }
 
 test("dry-run returns before and after with zero writes", async () => { const f = fixture(); const result = await f.service.execute({ ...input, dryRun: true }); assert.equal(result.status, "dry_run"); assert.equal(f.attempt.orderAmount, null); assert.equal(f.audits.length, 0); });
@@ -30,3 +31,22 @@ test("cross-tenant and mismatched identities are rejected before writes", async 
 test("invalid amount currency test order and gateway fail closed", () => { for (const invalid of [{ ...input, amount: "0" }, { ...input, currencyCode: "" }, { ...input, test: false }, { ...input, gateway: "stripe" }]) assert.throws(() => validateAdministrativeBillingReconciliation(invalid), AdministrativeReconciliationError); });
 test("payload rejects secrets and unexpected Shopify credentials", () => { assert.throws(() => validateAdministrativeBillingReconciliation({ ...input, accessToken: "secret" }), AdministrativeReconciliationError); });
 test("server-to-server authentication rejects missing and invalid signatures", () => { assert.equal(secureApiKeyMatches(undefined, "expected"), false); assert.equal(secureApiKeyMatches("wrong", "expected"), false); assert.equal(secureApiKeyMatches("expected", "expected"), true); });
+
+test("each reconciliation read reports its exact Prisma stage", async () => {
+  const cases = [
+    ["shop", "findUnique", "shop_lookup"],
+    ["subscription", "findUnique", "subscription_lookup"],
+    ["subscriptionBillingAttempt", "findMany", "billing_attempt_lookup"],
+    ["subscriptionOrder", "findMany", "subscription_order_lookup"],
+    ["billingRetryCycle", "findUnique", "billing_retry_cycle_lookup"],
+    ["billingReconciliationAudit", "findUnique", "reconciliation_audit_lookup"],
+  ] as const;
+  for (const [delegate, operation, expectedStage] of cases) {
+    const f = fixture();
+    f.tx[delegate][operation] = async () => { throw new Prisma.PrismaClientKnownRequestError("sensitive query failure", { code: "P2022", clientVersion: "6.19.3" }); };
+    await assert.rejects(f.service.execute({ ...input, dryRun: true }), (error: unknown) => {
+      assert.equal(sanitizedAdministrativeReconciliationPrismaError(error)?.prismaStage, expectedStage);
+      return true;
+    });
+  }
+});
