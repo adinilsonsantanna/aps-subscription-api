@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { canonicalizeShopId } from "../../utils/shopId";
+import {
+  recordAdministrativeReconciliationPrismaStage,
+  type AdministrativeReconciliationPrismaStage,
+} from "./prisma-observability";
 
 export type AdministrativeBillingReconciliationInput = {
   shopDomain: string; shopId: string; subscriptionContractId: string;
@@ -43,18 +47,25 @@ export class AdministrativeBillingReconciliationService {
   }
 
   private async executeTransaction(input: AdministrativeBillingReconciliationInput, payloadHash: string) {
+    let prismaStage: AdministrativeReconciliationPrismaStage = "transaction_initialization";
     return this.prisma.$transaction(async (tx: any) => {
+      prismaStage = "shop_lookup";
       const shop = await tx.shop.findUnique({ where: { domain: input.shopDomain }, select: { id: true, isActive: true, shopifyShopId: true } });
       if (!shop || !shop.isActive || !shop.shopifyShopId || canonicalizeShopId(shop.shopifyShopId) !== input.shopId) throw new AdministrativeReconciliationError(409, "shop_identity_mismatch");
+      prismaStage = "subscription_lookup";
       const subscription = await tx.subscription.findUnique({ where: { shopId_shopifyContractId: { shopId: shop.id, shopifyContractId: input.subscriptionContractId } }, select: { id: true, shopId: true } });
       if (!subscription) throw new AdministrativeReconciliationError(409, "subscription_identity_mismatch");
+      prismaStage = "billing_attempt_lookup";
       const attempts = await tx.subscriptionBillingAttempt.findMany({ where: { shopId: shop.id, shopifyBillingAttemptId: input.subscriptionBillingAttemptId } });
       if (attempts.length !== 1 || attempts[0].subscriptionId !== subscription.id || attempts[0].shopifyContractId !== input.subscriptionContractId || (attempts[0].shopifyOrderId && attempts[0].shopifyOrderId !== input.shopifyOrderId)) throw new AdministrativeReconciliationError(409, "billing_attempt_identity_mismatch");
+      prismaStage = "subscription_order_lookup";
       const orders = await tx.subscriptionOrder.findMany({ where: { subscriptionId: subscription.id, shopifyOrderId: input.shopifyOrderId } });
       if (orders.length !== 1) throw new AdministrativeReconciliationError(409, "order_identity_mismatch");
       const cycleAt = new Date(input.cycleOriginTime), attempt = attempts[0], order = orders[0];
+      prismaStage = "billing_retry_cycle_lookup";
       const cycle = await tx.billingRetryCycle.findUnique({ where: { subscriptionId_billingCycleAt: { subscriptionId: subscription.id, billingCycleAt: cycleAt } } });
       if (cycle && cycle.status === "succeeded" && attempt.cycleOriginTime && attempt.cycleOriginTime.getTime() !== cycleAt.getTime()) throw new AdministrativeReconciliationError(409, "cycle_identity_mismatch");
+      prismaStage = "reconciliation_audit_lookup";
       const existingAudit = await tx.billingReconciliationAudit.findUnique({ where: { billingAttemptId: attempt.id } });
       if (existingAudit) {
         if (existingAudit.payloadHash !== payloadHash) throw new AdministrativeReconciliationError(409, "reconciliation_payload_conflict");
@@ -63,11 +74,20 @@ export class AdministrativeBillingReconciliationService {
       const before = snapshot(attempt, order, cycle);
       const after = { attempt: { ...before.attempt, status: "succeeded", orderAmount: input.amount, orderCurrencyCode: input.currencyCode, attemptedAt: input.attemptedAt, completedAt: input.completedAt, cycleOriginTime: input.cycleOriginTime, reconciliationStatus: "complete" }, order: { ...before.order, amount: input.amount, currencyCode: input.currencyCode, status: "PAID", processedAt: input.completedAt }, cycle: cycle ? { id: cycle.id, status: "succeeded" } : null };
       if (input.dryRun) return { status: "dry_run", dryRun: true, before, after };
+      prismaStage = "billing_attempt_update";
       await tx.subscriptionBillingAttempt.update({ where: { id: attempt.id }, data: { status: "succeeded", shopifyOrderId: input.shopifyOrderId, orderAmount: input.amount, orderCurrencyCode: input.currencyCode, attemptedAt: new Date(input.attemptedAt), completedAt: new Date(input.completedAt), cycleOriginTime: cycleAt, reconciliationStatus: "complete", reconciliationError: null, reconciliationAttempts: { increment: 1 } } });
+      prismaStage = "subscription_order_update";
       await tx.subscriptionOrder.update({ where: { id: order.id }, data: { amount: input.amount, currencyCode: input.currencyCode, status: "PAID", processedAt: new Date(input.completedAt) } });
-      if (cycle) await tx.billingRetryCycle.update({ where: { id: cycle.id }, data: { status: "succeeded" } });
+      if (cycle) {
+        prismaStage = "billing_retry_cycle_update";
+        await tx.billingRetryCycle.update({ where: { id: cycle.id }, data: { status: "succeeded" } });
+      }
+      prismaStage = "reconciliation_audit_create";
       await tx.billingReconciliationAudit.create({ data: { shopId: shop.id, subscriptionId: subscription.id, billingAttemptId: attempt.id, shopifyBillingAttemptId: input.subscriptionBillingAttemptId, shopifyOrderId: input.shopifyOrderId, cycleOriginTime: cycleAt, correlationId: input.correlationId, payloadHash, before, after } });
       return { status: "reconciled", dryRun: false, before, after };
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }).catch((error: unknown) => {
+      recordAdministrativeReconciliationPrismaStage(error, prismaStage);
+      throw error;
+    });
   }
 }
