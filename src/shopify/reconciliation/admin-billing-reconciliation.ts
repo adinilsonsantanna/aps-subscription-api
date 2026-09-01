@@ -71,6 +71,7 @@ export class AdministrativeBillingReconciliationService {
         if (existingAudit.payloadHash !== payloadHash) throw new AdministrativeReconciliationError(409, "reconciliation_payload_conflict");
         return { status: "already_reconciled", dryRun: input.dryRun, before: existingAudit.before, after: existingAudit.after };
       }
+      if (!input.dryRun && attempt.reconciliationStatus !== "pending") throw new AdministrativeReconciliationError(409, "billing_attempt_not_pending");
       const before = snapshot(attempt, order, cycle);
       const after = { attempt: { ...before.attempt, status: "succeeded", orderAmount: input.amount, orderCurrencyCode: input.currencyCode, attemptedAt: input.attemptedAt, completedAt: input.completedAt, cycleOriginTime: input.cycleOriginTime, reconciliationStatus: "complete" }, order: { ...before.order, amount: input.amount, currencyCode: input.currencyCode, status: "PAID", processedAt: input.orderProcessedAt }, cycle: cycle ? { id: cycle.id, status: "succeeded" } : null };
       if (input.dryRun) return { status: "dry_run", dryRun: true, before, after };
