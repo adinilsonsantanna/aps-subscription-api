@@ -10,7 +10,7 @@ export type AdministrativeBillingReconciliationInput = {
   shopDomain: string; shopId: string; subscriptionContractId: string;
   subscriptionBillingAttemptId: string; shopifyOrderId: string; cycleOriginTime: string;
   status: "succeeded"; amount: string; currencyCode: string; attemptedAt: string;
-  completedAt: string; test: true; gateway: "bogus"; correlationId: string; dryRun: boolean;
+  completedAt: string; orderProcessedAt: string; test: true; gateway: "bogus"; correlationId: string; dryRun: boolean;
 };
 export class AdministrativeReconciliationError extends Error { constructor(public readonly statusCode: number, public readonly code: string) { super(code); } }
 
@@ -19,10 +19,10 @@ const iso = (value: unknown) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}
 export function validateAdministrativeBillingReconciliation(value: unknown): AdministrativeBillingReconciliationInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new AdministrativeReconciliationError(400, "invalid_payload");
   const v = value as Record<string, unknown>;
-  const keys = ["shopDomain", "shopId", "subscriptionContractId", "subscriptionBillingAttemptId", "shopifyOrderId", "cycleOriginTime", "status", "amount", "currencyCode", "attemptedAt", "completedAt", "test", "gateway", "correlationId", "dryRun"];
+  const keys = ["shopDomain", "shopId", "subscriptionContractId", "subscriptionBillingAttemptId", "shopifyOrderId", "cycleOriginTime", "status", "amount", "currencyCode", "attemptedAt", "completedAt", "orderProcessedAt", "test", "gateway", "correlationId", "dryRun"];
   if (Object.keys(v).some(key => !keys.includes(key))) throw new AdministrativeReconciliationError(400, "unexpected_field");
   if (typeof v.shopDomain !== "string" || !/^[a-z0-9][a-z0-9-]{0,62}\.myshopify\.com$/.test(v.shopDomain) || !gid(v.shopId, "Shop") || !gid(v.subscriptionContractId, "SubscriptionContract") || !gid(v.subscriptionBillingAttemptId, "SubscriptionBillingAttempt") || !gid(v.shopifyOrderId, "Order")) throw new AdministrativeReconciliationError(400, "invalid_identity");
-  if (!iso(v.cycleOriginTime) || !iso(v.attemptedAt) || !iso(v.completedAt) || v.status !== "succeeded" || v.test !== true || v.gateway !== "bogus") throw new AdministrativeReconciliationError(400, "invalid_shopify_state");
+  if (!iso(v.cycleOriginTime) || !iso(v.attemptedAt) || !iso(v.completedAt) || !iso(v.orderProcessedAt) || v.status !== "succeeded" || v.test !== true || v.gateway !== "bogus") throw new AdministrativeReconciliationError(400, "invalid_shopify_state");
   if (typeof v.amount !== "string" || !/^(?:0*[1-9]\d*)(?:\.\d{1,2})?$/.test(v.amount) || typeof v.currencyCode !== "string" || !/^[A-Z]{3}$/.test(v.currencyCode) || typeof v.correlationId !== "string" || !/^[A-Za-z0-9._:-]{8,160}$/.test(v.correlationId) || typeof v.dryRun !== "boolean") throw new AdministrativeReconciliationError(400, "invalid_reconciliation_data");
   return { ...(v as AdministrativeBillingReconciliationInput), shopId: canonicalizeShopId(v.shopId as string), shopDomain: (v.shopDomain as string).toLowerCase() };
 }
@@ -72,12 +72,12 @@ export class AdministrativeBillingReconciliationService {
         return { status: "already_reconciled", dryRun: input.dryRun, before: existingAudit.before, after: existingAudit.after };
       }
       const before = snapshot(attempt, order, cycle);
-      const after = { attempt: { ...before.attempt, status: "succeeded", orderAmount: input.amount, orderCurrencyCode: input.currencyCode, attemptedAt: input.attemptedAt, completedAt: input.completedAt, cycleOriginTime: input.cycleOriginTime, reconciliationStatus: "complete" }, order: { ...before.order, amount: input.amount, currencyCode: input.currencyCode, status: "PAID", processedAt: input.completedAt }, cycle: cycle ? { id: cycle.id, status: "succeeded" } : null };
+      const after = { attempt: { ...before.attempt, status: "succeeded", orderAmount: input.amount, orderCurrencyCode: input.currencyCode, attemptedAt: input.attemptedAt, completedAt: input.completedAt, cycleOriginTime: input.cycleOriginTime, reconciliationStatus: "complete" }, order: { ...before.order, amount: input.amount, currencyCode: input.currencyCode, status: "PAID", processedAt: input.orderProcessedAt }, cycle: cycle ? { id: cycle.id, status: "succeeded" } : null };
       if (input.dryRun) return { status: "dry_run", dryRun: true, before, after };
       prismaStage = "billing_attempt_update";
       await tx.subscriptionBillingAttempt.update({ where: { id: attempt.id }, data: { status: "succeeded", shopifyOrderId: input.shopifyOrderId, orderAmount: input.amount, orderCurrencyCode: input.currencyCode, attemptedAt: new Date(input.attemptedAt), completedAt: new Date(input.completedAt), cycleOriginTime: cycleAt, reconciliationStatus: "complete", reconciliationError: null, reconciliationAttempts: { increment: 1 } } });
       prismaStage = "subscription_order_update";
-      await tx.subscriptionOrder.update({ where: { id: order.id }, data: { amount: input.amount, currencyCode: input.currencyCode, status: "PAID", processedAt: new Date(input.completedAt) } });
+      await tx.subscriptionOrder.update({ where: { id: order.id }, data: { amount: input.amount, currencyCode: input.currencyCode, status: "PAID", processedAt: new Date(input.orderProcessedAt) } });
       if (cycle) {
         prismaStage = "billing_retry_cycle_update";
         await tx.billingRetryCycle.update({ where: { id: cycle.id }, data: { status: "succeeded" } });
