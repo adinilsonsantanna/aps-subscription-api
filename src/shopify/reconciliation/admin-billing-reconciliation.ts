@@ -13,13 +13,14 @@ export type AdministrativeBillingReconciliationInput = {
   completedAt: string; orderProcessedAt: string; test: true; gateway: "bogus"; correlationId: string; dryRun: boolean;
 };
 export class AdministrativeReconciliationError extends Error { constructor(public readonly statusCode: number, public readonly code: string) { super(code); } }
+export const ADMIN_RECONCILIATION_ACCEPTED_KEYS: readonly string[] = ["shopDomain", "shopId", "subscriptionContractId", "subscriptionBillingAttemptId", "shopifyOrderId", "cycleOriginTime", "status", "amount", "currencyCode", "attemptedAt", "completedAt", "orderProcessedAt", "test", "gateway", "correlationId", "dryRun"];
 
 const gid = (value: unknown, resource: string) => typeof value === "string" && new RegExp(`^gid://shopify/${resource}/[1-9][0-9]*$`).test(value);
 const iso = (value: unknown) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(value) && !Number.isNaN(Date.parse(value));
 export function validateAdministrativeBillingReconciliation(value: unknown): AdministrativeBillingReconciliationInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new AdministrativeReconciliationError(400, "invalid_payload");
   const v = value as Record<string, unknown>;
-  const keys = ["shopDomain", "shopId", "subscriptionContractId", "subscriptionBillingAttemptId", "shopifyOrderId", "cycleOriginTime", "status", "amount", "currencyCode", "attemptedAt", "completedAt", "orderProcessedAt", "test", "gateway", "correlationId", "dryRun"];
+  const keys = ADMIN_RECONCILIATION_ACCEPTED_KEYS;
   if (Object.keys(v).some(key => !keys.includes(key))) throw new AdministrativeReconciliationError(400, "unexpected_field");
   if (typeof v.shopDomain !== "string" || !/^[a-z0-9][a-z0-9-]{0,62}\.myshopify\.com$/.test(v.shopDomain) || !gid(v.shopId, "Shop") || !gid(v.subscriptionContractId, "SubscriptionContract") || !gid(v.subscriptionBillingAttemptId, "SubscriptionBillingAttempt") || !gid(v.shopifyOrderId, "Order")) throw new AdministrativeReconciliationError(400, "invalid_identity");
   if (!iso(v.cycleOriginTime) || !iso(v.attemptedAt) || !iso(v.completedAt) || !iso(v.orderProcessedAt) || v.status !== "succeeded" || v.test !== true || v.gateway !== "bogus") throw new AdministrativeReconciliationError(400, "invalid_shopify_state");
