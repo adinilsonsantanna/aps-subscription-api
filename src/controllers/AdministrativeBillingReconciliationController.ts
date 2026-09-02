@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import type { Request, Response } from "express";
-import { AdministrativeBillingReconciliationService, AdministrativeReconciliationError } from "../shopify/reconciliation/admin-billing-reconciliation";
+import { AdministrativeBillingReconciliationService, AdministrativeReconciliationError, ADMIN_RECONCILIATION_ACCEPTED_KEYS } from "../shopify/reconciliation/admin-billing-reconciliation";
+import { keysFingerprint, unexpectedKeys } from "../shopify/reconciliation/keys-fingerprint";
 import { sanitizedAdministrativeReconciliationPrismaError } from "../shopify/reconciliation/prisma-observability";
 
 function safeCorrelationId(body: unknown) {
@@ -27,10 +29,24 @@ export class AdministrativeBillingReconciliationController {
   }
 
   private async run(req: Request, res: Response, live: boolean) {
+    const requestId = randomUUID();
     try {
       return res.json(await this.service.execute(req.body));
     } catch (error) {
-      if (error instanceof AdministrativeReconciliationError) return res.status(error.statusCode).json({ error: error.code });
+      if (error instanceof AdministrativeReconciliationError) {
+        if (error.code === "unexpected_field") {
+          const correlationId = safeCorrelationId(req.body);
+          this.logger.error("[Administrative reconciliation] Unexpected payload field", {
+            event: live ? "administrative_reconciliation_live_unexpected_field" : "administrative_reconciliation_unexpected_field",
+            requestId,
+            unknownKeys: unexpectedKeys(req.body, ADMIN_RECONCILIATION_ACCEPTED_KEYS),
+            keyCount: Object.keys(req.body ?? {}).length,
+            fingerprint: keysFingerprint(req.body),
+            ...(correlationId ? { correlationId } : {}),
+          });
+        }
+        return res.status(error.statusCode).json({ error: error.code, requestId });
+      }
       const prismaDiagnostics = sanitizedAdministrativeReconciliationPrismaError(error);
       if (prismaDiagnostics) {
         const correlationId = safeCorrelationId(req.body);
