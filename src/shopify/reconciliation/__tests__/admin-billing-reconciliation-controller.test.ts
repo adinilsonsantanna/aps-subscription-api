@@ -32,7 +32,7 @@ test("live unexpected_field loga nomes das chaves, fingerprint e requestId sem e
   const entry = JSON.stringify(logs[0]);
   const logObject = (logs[0] as unknown[])[1] as Record<string, unknown>;
   assert.ok(entry.includes("administrative_reconciliation_live_unexpected_field"));
-  assert.deepEqual(logObject.unknownKeys, ["pwned"]);
+  assert.deepEqual(logObject.unknownKeys, [INVALID_KEY_NAME_MARKER]);
   assert.equal(logObject.keyCount, 17);
   assert.equal(logObject.fingerprint, keysFingerprint(req.body));
   assert.equal(logObject.requestId, responseBody.requestId);

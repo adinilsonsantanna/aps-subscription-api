@@ -1,8 +1,17 @@
 import { createHash } from "node:crypto";
 
-const SAFE_KEY_NAME = /^[A-Za-z0-9_.:-]{1,80}$/;
 export const INVALID_KEY_NAME_MARKER = "<invalid-key-name>";
 export const MAX_LOGGED_UNEXPECTED_KEYS = 20;
+
+export const OBSERVABILITY_KEY_ALLOWLIST: readonly string[] = [
+  "confirmation",
+  "confirmationMessage",
+  "shop",
+  "requestId",
+  "billingAttemptId",
+];
+
+const OBSERVABILITY_KEY_SET = new Set(OBSERVABILITY_KEY_ALLOWLIST);
 
 export function sortKeys(value: unknown): string[] {
   if (!value || typeof value !== "object" || Array.isArray(value)) return [];
@@ -15,7 +24,7 @@ export function keysFingerprint(value: unknown): string {
 }
 
 export function sanitizeObservabilityKeyName(name: string): string {
-  return SAFE_KEY_NAME.test(name) ? name : INVALID_KEY_NAME_MARKER;
+  return OBSERVABILITY_KEY_SET.has(name) ? name : INVALID_KEY_NAME_MARKER;
 }
 
 export function unexpectedKeys(value: unknown, accepted: readonly string[], limit = MAX_LOGGED_UNEXPECTED_KEYS): string[] {
