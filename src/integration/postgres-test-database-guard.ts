@@ -4,7 +4,8 @@ type DatabaseDestination = {
   database: string;
 };
 
-const TEST_DATABASE_MARKER = /(?:^|[^a-z0-9])test(?:[^a-z0-9]|$)/i;
+const TEST_DATABASE_NAME = /^[a-z0-9_]+$/;
+const TEST_DATABASE_MARKER = /(?:^|_)test(?:_|$)/;
 const PRODUCTION_DATABASE_MARKER = /(?:prod(?:uction)?|main)/i;
 const PRODUCTION_HOST_MARKER = /(?:^|[.-])(?:prod(?:uction)?|main)(?:[.-]|$)/i;
 
@@ -34,14 +35,16 @@ function parseDestination(raw: string, source: "TEST_DATABASE_URL" | "DATABASE_U
   } catch {
     return invalid(`${source} database encoding is invalid`);
   }
-  if (!database || database.includes("/") || database.includes("\\")) {
-    return invalid(`${source} database is empty or ambiguous`);
+  const normalizedDatabase = database.toLowerCase();
+  if (!normalizedDatabase) return invalid(`${source} database is empty`);
+  if (!TEST_DATABASE_NAME.test(normalizedDatabase)) {
+    return invalid(`${source} database contains invalid characters`);
   }
 
   return {
     hostname,
     port: parsed.port || "5432",
-    database: database.toLowerCase(),
+    database: normalizedDatabase,
   };
 }
 
