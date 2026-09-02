@@ -15,6 +15,18 @@ export class AdministrativeBillingReconciliationController {
   ) {}
 
   async execute(req: Request, res: Response) {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) return res.status(400).json({ error: "invalid_payload" });
+    if (req.body.dryRun !== true) return res.status(400).json({ error: "dry_run_required" });
+    return this.run(req, res, false);
+  }
+
+  async executeLive(req: Request, res: Response) {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) return res.status(400).json({ error: "invalid_payload" });
+    if (req.body.dryRun !== false) return res.status(400).json({ error: "live_mode_required" });
+    return this.run(req, res, true);
+  }
+
+  private async run(req: Request, res: Response, live: boolean) {
     try {
       return res.json(await this.service.execute(req.body));
     } catch (error) {
@@ -23,7 +35,7 @@ export class AdministrativeBillingReconciliationController {
       if (prismaDiagnostics) {
         const correlationId = safeCorrelationId(req.body);
         this.logger.error("[Administrative reconciliation] Failed", {
-          event: "administrative_reconciliation_failed",
+          event: live ? "administrative_reconciliation_live_failed" : "administrative_reconciliation_failed",
           ...prismaDiagnostics,
           ...(correlationId ? { correlationId } : {}),
         });
