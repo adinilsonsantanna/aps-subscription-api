@@ -50,6 +50,27 @@ test("strictly lower revision is always rejected", () => {
   assert.equal(shouldApplyShopifyContractEvent("paused", "20", "ACTIVE", "19"), false);
 });
 
+test("a late ACTIVE revision cannot reopen a cancelled contract", () => {
+  assert.equal(shouldApplyShopifyContractEvent("cancelled", "revision-10", "ACTIVE", "revision-11"), false);
+  assert.equal(shouldApplyShopifyContractEvent("expired", "revision-10", "PAUSED", "revision-11"), false);
+  assert.equal(shouldApplyShopifyContractEvent("failed", "revision-10", "ACTIVE", "revision-11"), false);
+});
+
+test("duplicate terminal CANCELLED->CANCELLED with the stored revision is gate-allowed and kept idempotent", () => {
+  assert.equal(shouldApplyShopifyContractEvent("cancelled", "revision-10", "CANCELLED", "revision-10"), true);
+  assert.equal(shouldApplyShopifyContractEvent("cancelled", "1699798057323", "CANCELLED", "1699798057323"), true);
+});
+
+test("webhook outcome is observable: gate verdict maps applied vs ignored", () => {
+  const verdict = (currentStatus: string | null | undefined, currentRevision: string | null | undefined, incomingStatus: string, incomingRevision?: string) =>
+    shouldApplyShopifyContractEvent(currentStatus, currentRevision, incomingStatus, incomingRevision)
+      ? "applied"
+      : "ignored";
+  assert.equal(verdict("active", "1699798057323", "CANCELLED", "1699798057323"), "applied");
+  assert.equal(verdict("cancelled", "1699798057323", "ACTIVE", "1699798057324"), "ignored");
+  assert.equal(verdict("active", "1699798057323", "PAUSED", "1699798057322"), "ignored");
+});
+
 test("contract update patch reflects terminal status and omits absent next billing", () => {
   const patch = contractUpdatePatch({ ...enrichedContract, status: "CANCELLED", nextBillingAt: undefined });
   assert.equal(patch.status, "cancelled");
