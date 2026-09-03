@@ -36,6 +36,47 @@ test("Shopify event without revision cannot make an unordered reversible transit
   assert.equal(shouldApplyShopifyContractEvent("active", null, "CANCELLED"), true);
 });
 
+test("cancellation applies even when revision is equal to the stored one", () => {
+  assert.equal(shouldApplyShopifyContractEvent("active", "revision-10", "CANCELLED", "revision-10"), true);
+  assert.equal(shouldApplyShopifyContractEvent("active", "10", "expired", "10"), true);
+});
+
+test("equal revision still rejects reversible transitions", () => {
+  assert.equal(shouldApplyShopifyContractEvent("active", "revision-10", "PAUSED", "revision-10"), false);
+});
+
+test("strictly lower revision is always rejected", () => {
+  assert.equal(shouldApplyShopifyContractEvent("active", "revision-10", "CANCELLED", "revision-9"), false);
+  assert.equal(shouldApplyShopifyContractEvent("paused", "20", "ACTIVE", "19"), false);
+});
+
+test("a late ACTIVE revision cannot reopen a cancelled contract", () => {
+  assert.equal(shouldApplyShopifyContractEvent("cancelled", "revision-10", "ACTIVE", "revision-11"), false);
+  assert.equal(shouldApplyShopifyContractEvent("expired", "revision-10", "PAUSED", "revision-11"), false);
+  assert.equal(shouldApplyShopifyContractEvent("failed", "revision-10", "ACTIVE", "revision-11"), false);
+});
+
+test("duplicate terminal CANCELLED->CANCELLED with the stored revision is gate-allowed and kept idempotent", () => {
+  assert.equal(shouldApplyShopifyContractEvent("cancelled", "revision-10", "CANCELLED", "revision-10"), true);
+  assert.equal(shouldApplyShopifyContractEvent("cancelled", "1699798057323", "CANCELLED", "1699798057323"), true);
+});
+
+test("webhook outcome is observable: gate verdict maps applied vs ignored", () => {
+  const verdict = (currentStatus: string | null | undefined, currentRevision: string | null | undefined, incomingStatus: string, incomingRevision?: string) =>
+    shouldApplyShopifyContractEvent(currentStatus, currentRevision, incomingStatus, incomingRevision)
+      ? "applied"
+      : "ignored";
+  assert.equal(verdict("active", "1699798057323", "CANCELLED", "1699798057323"), "applied");
+  assert.equal(verdict("cancelled", "1699798057323", "ACTIVE", "1699798057324"), "ignored");
+  assert.equal(verdict("active", "1699798057323", "PAUSED", "1699798057322"), "ignored");
+});
+
+test("contract update patch reflects terminal status and omits absent next billing", () => {
+  const patch = contractUpdatePatch({ ...enrichedContract, status: "CANCELLED", nextBillingAt: undefined });
+  assert.equal(patch.status, "cancelled");
+  assert.equal(patch.nextBillingAt, undefined);
+});
+
 class MemoryRepository implements ShopifyEventRepository {
   shops = new Map<string, { id: string; isActive: boolean; shopifyShopId: string | null }>([["known.myshopify.com", { id: "shop-1", isActive: true, shopifyShopId: "gid://shopify/Shop/1" }]]);
   events = new Map<string, { processed: boolean; processedAt?: Date; errorMessage?: string; shopifyEventId?: string }>();
