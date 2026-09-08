@@ -23,7 +23,7 @@ export interface GiftOrderSnapshot {
   cancelledAt: string | null;
   closedAt: string | null;
   displayFinancialStatus: string | null;
-  fulfillmentStatus: string | null;
+  displayFulfillmentStatus: string | null;
   processedAt: string | null;
   totalShopMoney: number;
   shippingShopMoney: number;
@@ -110,7 +110,7 @@ export class GiftShopifyClient {
           cancelledAt
           closedAt
           displayFinancialStatus
-          fulfillmentStatus
+          displayFulfillmentStatus
           processedAt
           currencyCode
           totalPriceSet {
@@ -119,12 +119,12 @@ export class GiftShopifyClient {
           shippingLines(first: 10) {
             nodes {
               id
-              priceSet { shopMoney { amount currencyCode } }
+              discountedPriceSet { shopMoney { amount currencyCode } }
             }
           }
           fulfillmentOrders(first: 5) {
             nodes {
-              assignedLocation { id name }
+              assignedLocation { location { id } }
             }
           }
         }
@@ -135,21 +135,21 @@ export class GiftShopifyClient {
       cancelledAt: string | null;
       closedAt: string | null;
       displayFinancialStatus: string | null;
-      fulfillmentStatus: string | null;
+      displayFulfillmentStatus: string | null;
       processedAt: string | null;
       currencyCode: string | null;
       totalPriceSet: { shopMoney: { amount: string; currencyCode: string } };
-      shippingLines: { nodes: Array<{ id: string; priceSet: { shopMoney: { amount: string } } }> };
-      fulfillmentOrders: { nodes: Array<{ assignedLocation: { id: string; name: string } | null }> };
+      shippingLines: { nodes: Array<{ id: string; discountedPriceSet: { shopMoney: { amount: string; currencyCode: string } } }> };
+      fulfillmentOrders: { nodes: Array<{ assignedLocation: { location: { id: string } | null } | null }> };
     } | null }>(shopDomain, accessToken, query, { id: orderId });
     if (envelope.errors?.length) {
       throw classifyError(new Error(envelope.errors[0].message), 200);
     }
     const order = envelope.data?.order;
     if (!order) return null;
-    const shipping = order.shippingLines.nodes.reduce((sum, line) => sum + Number(line.priceSet.shopMoney.amount), 0);
+    const shipping = order.shippingLines.nodes.reduce((sum, line) => sum + Number(line.discountedPriceSet.shopMoney.amount), 0);
     const servingLocationIds = order.fulfillmentOrders.nodes
-      .map((fulfillmentOrder) => fulfillmentOrder.assignedLocation?.id)
+      .map((fulfillmentOrder) => fulfillmentOrder.assignedLocation?.location?.id)
       .filter((value): value is string => Boolean(value));
     return {
       id: order.id,
@@ -157,7 +157,7 @@ export class GiftShopifyClient {
       cancelledAt: order.cancelledAt,
       closedAt: order.closedAt,
       displayFinancialStatus: order.displayFinancialStatus,
-      fulfillmentStatus: order.fulfillmentStatus,
+      displayFulfillmentStatus: order.displayFulfillmentStatus,
       processedAt: order.processedAt,
       totalShopMoney: Number(order.totalPriceSet.shopMoney.amount),
       shippingShopMoney: shipping,
@@ -180,15 +180,15 @@ export class GiftShopifyClient {
             id
             sku
             title
-            requiresShipping
             inventoryItem {
               id
               tracked
-              inventoryManagement
-              inventoryLevels(first: 25${locationIds.length ? `, locationIds: ["${locationIds.join('","')}"]` : ""}) {
+              requiresShipping
+              inventoryLevels(first: 50) {
                 edges {
                   node {
-                    available
+                    location { id }
+                    quantities(names: ["available"]) { quantity }
                   }
                 }
               }
@@ -205,13 +205,12 @@ export class GiftShopifyClient {
       id: string;
       sku: string | null;
       title: string | null;
-      requiresShipping: boolean;
       inventoryItem: {
         id: string;
         tracked: boolean;
-        inventoryManagement: string;
-        inventoryLevels: { edges: Array<{ node: { available: number } }> };
-      };
+        requiresShipping: boolean;
+        inventoryLevels: { edges: Array<{ node: { location: { id: string } | null; quantities: { quantity: number } | null } }> };
+      } | null;
       product: { id: string; title: string; status: string } | null;
     } | null> }>(shopDomain, accessToken, query, { ids: variantIds });
     if (envelope.errors?.length) {
@@ -223,12 +222,12 @@ export class GiftShopifyClient {
       if (!node) continue;
       const hasRequestedId = requested.has(node.id);
       if (!hasRequestedId) continue;
-      const available = node.inventoryItem?.inventoryLevels?.edges?.reduce(
-        (sum, edge) => sum + (edge?.node?.available ?? 0),
-        0,
-      ) ?? 0;
-      const tracked = node.inventoryItem?.tracked === true &&
-        (node.inventoryItem.inventoryManagement === "SHOPIFY");
+      const inventoryLevels = node.inventoryItem?.inventoryLevels?.edges ?? [];
+      const available = inventoryLevels.reduce((sum, edge) => sum + (edge?.node?.quantities?.quantity ?? 0), 0);
+      const availableAtServingLocation = inventoryLevels
+        .filter((edge) => !locationIds.length || !edge?.node?.location?.id || locationIds.includes(edge.node.location.id))
+        .reduce((sum, edge) => sum + (edge?.node?.quantities?.quantity ?? 0), 0);
+      const tracked = node.inventoryItem?.tracked === true;
       const productActive = node.product?.status === "ACTIVE";
       candidates.push({
         variantId: node.id,
@@ -236,11 +235,11 @@ export class GiftShopifyClient {
         title: node.title ?? "",
         productId: node.product?.id ?? "",
         productTitle: node.product?.title ?? "",
-        requiresShipping: node.requiresShipping === true,
+        requiresShipping: node.inventoryItem?.requiresShipping === true,
         tracked,
         productActive,
         available,
-        availableAtLocation: available > 0,
+        availableAtLocation: availableAtServingLocation > 0,
       });
     }
     return candidates;
@@ -253,9 +252,7 @@ export class GiftShopifyClient {
           calculatedOrder {
             id
             totalPriceSet { shopMoney { amount currencyCode } }
-            shippingLines(first: 10) {
-              nodes { id price { shopMoney { amount currencyCode } } }
-            }
+            shippingLines { id price { shopMoney { amount currencyCode } } }
           }
           userErrors { field message }
         }
@@ -265,7 +262,7 @@ export class GiftShopifyClient {
         calculatedOrder: {
           id: string;
           totalPriceSet: { shopMoney: { amount: string; currencyCode: string } };
-          shippingLines: { nodes: Array<{ id: string; price: { shopMoney: { amount: string } } }> };
+          shippingLines: Array<{ id: string; price: { shopMoney: { amount: string } } }>;
         } | null;
         userErrors: Array<{ field: string[] | null; message: string }>;
       };
@@ -285,9 +282,7 @@ export class GiftShopifyClient {
           calculatedOrder {
             id
             totalPriceSet { shopMoney { amount currencyCode } }
-            shippingLines(first: 10) {
-              nodes { id price { shopMoney { amount currencyCode } } }
-            }
+            shippingLines { id price { shopMoney { amount currencyCode } } }
           }
           calculatedLineItem { id quantity }
           userErrors { field message }
@@ -298,7 +293,7 @@ export class GiftShopifyClient {
         calculatedOrder: {
           id: string;
           totalPriceSet: { shopMoney: { amount: string; currencyCode: string } };
-          shippingLines: { nodes: Array<{ id: string; price: { shopMoney: { amount: string } } }> };
+          shippingLines: Array<{ id: string; price: { shopMoney: { amount: string } } }>;
         } | null;
         calculatedLineItem: { id: string; quantity: number } | null;
         userErrors: Array<{ field: string[] | null; message: string }>;
@@ -321,14 +316,12 @@ export class GiftShopifyClient {
         orderEditAddLineItemDiscount(
           id: $id
           lineItemId: $lineItemId
-          discount: { title: "Brinde APS Subscription", description: "Brinde adicionado pelo APS Subscription", percentValue: 100 }
+          discount: { description: "Brinde adicionado pelo APS Subscription", percentValue: 100 }
         ) {
           calculatedOrder {
             id
             totalPriceSet { shopMoney { amount currencyCode } }
-            shippingLines(first: 10) {
-              nodes { id price { shopMoney { amount currencyCode } } }
-            }
+            shippingLines { id price { shopMoney { amount currencyCode } } }
           }
           userErrors { field message }
         }
@@ -338,7 +331,7 @@ export class GiftShopifyClient {
         calculatedOrder: {
           id: string;
           totalPriceSet: { shopMoney: { amount: string; currencyCode: string } };
-          shippingLines: { nodes: Array<{ id: string; price: { shopMoney: { amount: string } } }> };
+          shippingLines: Array<{ id: string; price: { shopMoney: { amount: string } } }>;
         } | null;
         userErrors: Array<{ field: string[] | null; message: string }>;
       };

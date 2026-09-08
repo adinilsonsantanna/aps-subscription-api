@@ -113,7 +113,7 @@ function shopifyFixture(overrides: Record<string, unknown> = {}) {
       cancelledAt: null,
       closedAt: null,
       displayFinancialStatus: "PAID",
-      fulfillmentStatus: null,
+      displayFulfillmentStatus: null,
       processedAt: now.toISOString(),
       totalShopMoney: 100.0,
       shippingShopMoney: 10.0,
@@ -126,15 +126,15 @@ function shopifyFixture(overrides: Record<string, unknown> = {}) {
     },
     orderEditBegin: async () => {
       calls.push("orderEditBegin");
-      return { data: { orderEditBegin: { calculatedOrder: { id: "gid://shopify/CalculatedOrder/9", totalPriceSet: { shopMoney: { amount: "100.00", currencyCode: "BRL" } }, shippingLines: { nodes: [{ id: "sl-1", price: { shopMoney: { amount: "10.00", currencyCode: "BRL" } } }] } }, userErrors: [] } } };
+      return { data: { orderEditBegin: { calculatedOrder: { id: "gid://shopify/CalculatedOrder/9", totalPriceSet: { shopMoney: { amount: "100.00", currencyCode: "BRL" } }, shippingLines: [{ id: "sl-1", price: { shopMoney: { amount: "10.00", currencyCode: "BRL" } } }] }, userErrors: [] } } };
     },
     orderEditAddVariant: async () => {
       calls.push("orderEditAddVariant");
-      return { data: { orderEditAddVariant: { calculatedOrder: { id: "gid://shopify/CalculatedOrder/9", totalPriceSet: { shopMoney: { amount: "100.00", currencyCode: "BRL" } }, shippingLines: { nodes: [{ id: "sl-1", price: { shopMoney: { amount: "10.00", currencyCode: "BRL" } } }] } }, calculatedLineItem: { id: "gid://shopify/CalculatedLineItem/55", quantity: 1 }, userErrors: [] } } };
+      return { data: { orderEditAddVariant: { calculatedOrder: { id: "gid://shopify/CalculatedOrder/9", totalPriceSet: { shopMoney: { amount: "100.00", currencyCode: "BRL" } }, shippingLines: [{ id: "sl-1", price: { shopMoney: { amount: "10.00", currencyCode: "BRL" } } }] }, calculatedLineItem: { id: "gid://shopify/CalculatedLineItem/55", quantity: 1 }, userErrors: [] } } };
     },
     orderEditAddLineItemDiscount: async () => {
       calls.push("orderEditAddLineItemDiscount");
-      return { data: { orderEditAddLineItemDiscount: { calculatedOrder: overrides.afterDiscount ?? { id: "gid://shopify/CalculatedOrder/9", totalPriceSet: { shopMoney: { amount: "100.00", currencyCode: "BRL" } }, shippingLines: { nodes: [{ id: "sl-1", price: { shopMoney: { amount: "10.00", currencyCode: "BRL" } } }] } }, userErrors: [] } } };
+      return { data: { orderEditAddLineItemDiscount: { calculatedOrder: overrides.afterDiscount ?? { id: "gid://shopify/CalculatedOrder/9", totalPriceSet: { shopMoney: { amount: "100.00", currencyCode: "BRL" } }, shippingLines: [{ id: "sl-1", price: { shopMoney: { amount: "10.00", currencyCode: "BRL" } } }] }, userErrors: [] } } };
     },
     orderEditCommit: async () => {
       calls.push("orderEditCommit");
@@ -278,7 +278,7 @@ test("produto inativo excluído da eligibilidade resulta em no_stock sem editar"
 test("pedido cancelado, já atendido ou não pago gera skip específico", async () => {
   for (const [orderPatch, expected] of [
     [{ cancelledAt: now.toISOString() }, "order_cancelled"],
-    [{ fulfillmentStatus: "FULFILLED" }, "order_fulfilled"],
+    [{ displayFulfillmentStatus: "FULFILLED" }, "order_fulfilled"],
     [{ displayFinancialStatus: "PENDING" }, "order_not_paid"],
   ] as const) {
     const f = dbFixture();
@@ -337,7 +337,7 @@ test("instalação antiga ou loja inativa bloqueia o job", async () => {
 
 test("edição que aumentaria o total não comita o brinde", async () => {
   const f = dbFixture();
-  const s = shopifyFixture({ afterDiscount: { id: "gid://shopify/CalculatedOrder/9", totalPriceSet: { shopMoney: { amount: "150.00", currencyCode: "BRL" } }, shippingLines: { nodes: [] } } });
+  const s = shopifyFixture({ afterDiscount: { id: "gid://shopify/CalculatedOrder/9", totalPriceSet: { shopMoney: { amount: "150.00", currencyCode: "BRL" } }, shippingLines: [] } });
   await buildEngine(f, s).processShop("shop-1");
   assert.equal(f.job.status, "SKIPPED");
   assert.equal(f.job.resultCode, "would_increase_total");
@@ -386,7 +386,7 @@ test("recoverStale converte COMMIT_PENDING com lease expirado em UNCERTAIN", asy
 
 test("pedido sem local de atendimento é aceito quando há estoque em algum local", async () => {
   const f = dbFixture();
-  const s = shopifyFixture({ order: { id: "gid://shopify/Order/1001", legacyResourceId: "1001", cancelledAt: null, closedAt: null, displayFinancialStatus: "PAID", fulfillmentStatus: null, processedAt: now.toISOString(), totalShopMoney: 100, shippingShopMoney: 10, currencyCode: "BRL", servingLocationIds: [] } });
+  const s = shopifyFixture({ order: { id: "gid://shopify/Order/1001", legacyResourceId: "1001", cancelledAt: null, closedAt: null, displayFinancialStatus: "PAID", displayFulfillmentStatus: null, processedAt: now.toISOString(), totalShopMoney: 100, shippingShopMoney: 10, currencyCode: "BRL", servingLocationIds: [] } });
   await buildEngine(f, s).processShop("shop-1");
   assert.equal(f.job.status, "COMMITTED");
 });
