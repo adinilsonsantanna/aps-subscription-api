@@ -228,7 +228,7 @@ export class SubscriptionGiftEngine {
     if (order.cancelledAt) {
       return this.terminal(row, "SKIPPED", "order_cancelled", "Pedido cancelado.", now, metrics);
     }
-    if (order.fulfillmentStatus === "FULFILLED") {
+    if (order.displayFulfillmentStatus === "FULFILLED") {
       return this.terminal(row, "SKIPPED", "order_fulfilled", "Pedido já atendido (fulfillment concluído).", now, metrics);
     }
     if (order.displayFinancialStatus !== "PAID") {
@@ -427,7 +427,7 @@ export class SubscriptionGiftEngine {
       const finalCalculated = discountPayload?.calculatedOrder ?? addPayload?.calculatedOrder;
       const newTotal = finalCalculated ? asNumber(finalCalculated.totalPriceSet?.shopMoney?.amount) : orderTotalBefore;
       const newShipping = finalCalculated
-        ? (finalCalculated.shippingLines?.nodes ?? []).reduce((sum, line) => sum + asNumber(line.price?.shopMoney?.amount), 0)
+        ? (finalCalculated.shippingLines ?? []).reduce((sum, line) => sum + asNumber(line.price?.shopMoney?.amount), 0)
         : orderShippingBefore;
 
       const totalIncreased = newTotal > orderTotalBefore + 0.005;
