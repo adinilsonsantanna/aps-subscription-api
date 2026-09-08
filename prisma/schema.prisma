@@ -28,6 +28,8 @@ model Shop {
   notificationSettings       NotificationSettings?
   sendingDomains             SendingDomain[]
   notificationDeliveryEvents NotificationDeliveryEvent[]
+  giftSettings               SubscriptionGiftSettings?
+  giftJobs                   SubscriptionGiftJob[]
   createdAt                  DateTime                     @default(now())
   updatedAt                  DateTime                     @updatedAt
   lastInstalledAt            DateTime?
@@ -106,6 +108,92 @@ enum TeamNotificationFrequency {
   DAILY_SUMMARY
   WEEKLY_SUMMARY
   NEVER
+}
+
+enum SubscriptionGiftSchedule {
+  FIRST_ORDER
+  RENEWALS
+  BOTH
+}
+
+enum SubscriptionGiftSelectionMode {
+  FIXED_VARIANT
+  RANDOM_GROUP
+}
+
+enum SubscriptionGiftJobStatus {
+  PENDING
+  COMMIT_PENDING
+  COMMITTED
+  SKIPPED
+  FAILED
+  UNCERTAIN
+}
+
+model SubscriptionGiftSettings {
+  shopId           String                           @id
+  shop             Shop                             @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  enabled          Boolean                          @default(false)
+  enabledAt        DateTime?
+  schedule         SubscriptionGiftSchedule         @default(FIRST_ORDER)
+  selectionMode    SubscriptionGiftSelectionMode    @default(FIXED_VARIANT)
+  fixedVariantId   String?
+  fixedProductId   String?
+  fixedTitle       String?
+  fixedSku         String?
+  variantPool      Json                             @default("[]")
+  maxPoolSize      Int                              @default(50)
+  createdAt        DateTime                         @default(now())
+  updatedAt        DateTime                         @updatedAt
+
+  @@index([shopId, enabled])
+}
+
+model SubscriptionGiftJob {
+  id                                String                      @id @default(cuid())
+  shopId                            String
+  shop                              Shop                        @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  orderId                           String
+  orderKey                          String
+  scheduleKind                      SubscriptionGiftSchedule
+  orderProcessedAt                  DateTime?
+  orderCurrencyCode                 String?
+  subscriptionId                    String?
+  status                            SubscriptionGiftJobStatus    @default(PENDING)
+  chosenVariantId                   String?
+  chosenVariantSku                  String?
+  chosenProductId                   String?
+  chosenTitle                       String?
+  candidatesWithStock               Int                         @default(0)
+  candidatePoolSnapshot             Json?
+  installationGeneration            Int                         @default(0)
+  resultCode                        String?
+  resultMessage                     String?
+  orderEditId                       String?
+  calculatedOrderId                 String?
+  giftLineDeterminativeId           String?
+  giftLineIdentifier                String?
+  orderTotalBefore                  Decimal?                    @db.Decimal(20, 2)
+  orderShippingBefore               Decimal?                    @db.Decimal(20, 2)
+  orderTotalAfterComputed           Decimal?                    @db.Decimal(20, 2)
+  commitIntentPersistedAt           DateTime?
+  attemptCount                      Int                         @default(0)
+  maxAttempts                       Int                         @default(3)
+  claimToken                        String?
+  claimedAt                         DateTime?
+  leaseExpiresAt                    DateTime?
+  availableAt                       DateTime                    @default(now())
+  lastError                         String?
+  reviewRequiredAt                  DateTime?
+  reviewedAt                        DateTime?
+  processedAt                       DateTime?
+  createdAt                         DateTime                    @default(now())
+  updatedAt                         DateTime                    @updatedAt
+
+  @@unique([shopId, orderKey])
+  @@index([status, leaseExpiresAt])
+  @@index([status, availableAt])
+  @@index([shopId, createdAt])
 }
 
 model BillingRetrySettings {

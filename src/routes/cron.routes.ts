@@ -1,10 +1,14 @@
 import { Router } from "express";
 import { RetryCronController } from "../controllers/RetryCronController";
 import { NotificationController } from "../controllers/NotificationController";
+import { GiftCronController } from "../controllers/GiftCronController";
 const router = Router(); const controller = new RetryCronController();
 router.post("/retry-billing", controller.run.bind(controller));
 router.get("/retry-billing", controller.run.bind(controller));
 const notifications = new NotificationController();
 router.get("/notifications", notifications.cron.bind(notifications));
 router.post("/notifications", notifications.cron.bind(notifications));
+const gifts = new GiftCronController();
+router.get("/subscription-gifts", gifts.run.bind(gifts));
+router.post("/subscription-gifts", gifts.run.bind(gifts));
 export default router;

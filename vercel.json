@@ -6,7 +6,10 @@
             "use": "@vercel/node"
         }
     ],
-    "crons": [{ "path": "/api/cron/retry-billing", "schedule": "0 9 * * *" }],
+    "crons": [
+        { "path": "/api/cron/retry-billing", "schedule": "0 9 * * *" },
+        { "path": "/api/cron/subscription-gifts", "schedule": "0 * * * *" }
+    ],
     "routes": [
         {
             "src": "/api/webhooks/stripe",

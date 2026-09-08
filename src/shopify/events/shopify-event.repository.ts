@@ -15,6 +15,8 @@ import { canonicalBillingSourceKey } from "../../notifications/billing-notificat
 import { canonicalizeShopId } from "../../utils/shopId";
 import { ShopifyShopIdentityMismatchError } from "./shopify-event.types";
 import { ShopifyBillingReconciliationPendingError } from "./shopify-event.types";
+import { enqueueGiftJob } from "../../gifts/subscription-gift.jobs";
+import { SubscriptionGiftSchedule } from "../../gifts/subscription-gift.types";
 
 export interface ShopifyEventShop {
   id: string;
@@ -325,6 +327,15 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
         update: {},
       });
     }
+    if (contract.originOrder?.id) {
+      await this.enqueueGift(transaction, shopId, {
+        orderId: contract.originOrder.id,
+        orderProcessedAt: contract.originOrder.processedAt ?? null,
+        orderCurrencyCode: contract.currencyCode,
+        subscriptionId: subscription.id,
+        scheduleKind: "FIRST_ORDER",
+      });
+    }
   }
 
   private async updateContract(
@@ -360,6 +371,29 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
     const previous = String(existing?.status || "").toLowerCase();
     if (previous !== newStatus && (newStatus === "paused" || newStatus === "cancelled")) return { eventType: newStatus === "paused" ? "subscription_paused" : "subscription_cancelled", sourceKey: `contract:${shopifyContractId}:${newStatus}`, subscriptionId: subscription.id, customerEmail: subscription.shopifyCustomerEmail || existing?.shopifyCustomerEmail || null };
     return null;
+  }
+
+  private async enqueueGift(
+    transaction: Prisma.TransactionClient,
+    shopId: string,
+    input: {
+      orderId: string;
+      orderProcessedAt?: Date | string | null;
+      orderCurrencyCode?: string | null;
+      subscriptionId?: string | null;
+      scheduleKind: SubscriptionGiftSchedule;
+    },
+  ) {
+    const shop = await transaction.shop.findUnique({
+      where: { id: shopId },
+      select: { installationGeneration: true },
+    });
+    if (!shop) return;
+    await enqueueGiftJob(transaction, {
+      shopId,
+      installationGeneration: shop.installationGeneration,
+      ...input,
+    });
   }
 
   private async syncContractLines(
@@ -450,6 +484,13 @@ export class PrismaShopifyEventRepository implements ShopifyEventRepository {
         where: { shopifyOrderKey: `${shopId}:${attempt.shopifyOrderId}` },
         create: { subscriptionId: subscription.id, shopifyOrderId: attempt.shopifyOrderId!, shopifyOrderKey: `${shopId}:${attempt.shopifyOrderId}`, gatewayOrderId: attempt.shopifyBillingAttemptId, amount: orderAmount!, currencyCode: orderCurrencyCode!, status: enriched?.order?.financialStatus ?? "PAID", processedAt: attempt.attemptedAt! },
         update: { shopifyOrderId: attempt.shopifyOrderId!, gatewayOrderId: attempt.shopifyBillingAttemptId, amount: orderAmount!, currencyCode: orderCurrencyCode!, status: enriched?.order?.financialStatus ?? "PAID", processedAt: attempt.attemptedAt! },
+      });
+      await this.enqueueGift(transaction, shopId, {
+        orderId: attempt.shopifyOrderId!,
+        orderProcessedAt: attempt.attemptedAt,
+        orderCurrencyCode: orderCurrencyCode ?? null,
+        subscriptionId: subscription.id,
+        scheduleKind: "RENEWALS",
       });
       await transaction.billingRetryCycle.upsert({
         where: { subscriptionId_billingCycleAt: { subscriptionId: subscription.id, billingCycleAt: attempt.cycleOriginTime! } },
