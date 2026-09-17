@@ -32,9 +32,9 @@ export interface GiftOrderSnapshot {
 }
 
 export interface GiftShopifyCallError extends Error {
-  kind: "http" | "timeout" | "graphql_unavailable";
+  kind: "http" | "timeout" | "graphql_error" | "network";
   status?: number;
-  raw?: unknown;
+  graphqlCodes?: string[];
 }
 
 export type ShopifyGraphqlEnvelope<T> = {
@@ -47,7 +47,7 @@ function classifyError(error: unknown, status?: number): GiftShopifyCallError {
     return Object.assign(new Error(`Tempo esgotado na Shopify Admin API.`), { kind: "timeout" as const });
   }
   const message = error instanceof Error ? error.message : "Falha na chamada à Shopify Admin API";
-  return Object.assign(new Error(message), { kind: "http" as const, status, raw: error });
+  return Object.assign(new Error(message), { kind: status === undefined ? "network" as const : "http" as const, status });
 }
 
 function responseToJson(response: Response): Promise<unknown> {
@@ -143,7 +143,10 @@ export class GiftShopifyClient {
       fulfillmentOrders: { nodes: Array<{ assignedLocation: { location: { id: string } | null } | null }> };
     } | null }>(shopDomain, accessToken, query, { id: orderId });
     if (envelope.errors?.length) {
-      throw classifyError(new Error(envelope.errors[0].message), 200);
+      const error = classifyError(new Error("Shopify GraphQL retornou erro"), 200);
+      error.kind = "graphql_error";
+      error.graphqlCodes = [...new Set(envelope.errors.map((item) => item.extensions?.code).filter((code): code is string => Boolean(code)).slice(0, 10))];
+      throw error;
     }
     const order = envelope.data?.order;
     if (!order) return null;
