@@ -1,0 +1,28 @@
+name: Recover subscription gift 1020 (temporary)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Recover allowlisted job only
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          response_file="$(mktemp)"
+          status="$(curl --silent --show-error --max-time 30 \
+            --output "${response_file}" --write-out '%{http_code}' \
+            --request POST \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "https://aps-subscription-api.vercel.app/api/cron/subscription-gifts/recover?jobId=cmu5q5t5e0003jw04zv6faoqy")"
+          body="$(cat "${response_file}")"
+          rm -f "${response_file}"
+          echo "HTTP ${status}"
+          echo "${body}" | jq '{success, status, processedAt, resultCode, idempotent}'
+          test "${status}" = "200"
+          echo "${body}" | jq -e '.status == "COMMITTED" and (.processedAt != null) and .resultCode == "recovered_from_commit_pending"' >/dev/null
