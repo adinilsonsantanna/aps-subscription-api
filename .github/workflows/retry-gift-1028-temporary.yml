@@ -1,0 +1,19 @@
+name: Temporary isolated gift retry 1028
+
+on:
+  workflow_dispatch:
+
+jobs:
+  retry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Execute allowlisted retry
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "$CRON_SECRET"
+          curl --fail-with-body --max-time 30 --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "https://aps-subscription-api.vercel.app/api/cron/subscription-gifts/retry?jobId=cmud6ymj40003jw04hljylu9j"
