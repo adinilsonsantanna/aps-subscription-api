@@ -22,15 +22,32 @@ jobs:
             exit 1
           fi
 
-          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+          response_file="$(mktemp)"
+          trap 'rm -f "${response_file}"' EXIT
+
+          status="$(curl --silent --show-error --output "${response_file}" --write-out '%{http_code}' \
             --max-time 30 \
             --request POST \
             --header "Authorization: Bearer ${CRON_SECRET}" \
             "https://aps-subscription-api.vercel.app/api/cron/subscription-gifts")"
 
+          sanitized_body="$(jq -c '
+            walk(
+              if type == "object" then
+                with_entries(
+                  if (.key | ascii_downcase | test("token|secret|authorization|api.?key|password|cookie"))
+                  then .value = "[REDACTED]"
+                  else .
+                  end
+                )
+              else .
+              end
+            )
+          ' "${response_file}" 2>/dev/null || printf '%s' '{"error":"non_json_response"}')"
+          request_id="$(printf '%s' "${sanitized_body}" | jq -r '.requestId // .request_id // empty' 2>/dev/null || true)"
+          echo "Subscription gifts worker HTTP ${status}; requestId=${request_id:-absent}; response=${sanitized_body}"
+
           if [ "${status}" -lt 200 ] || [ "${status}" -ge 300 ]; then
-            echo "Subscription gifts worker returned HTTP ${status}" >&2
+            echo "Subscription gifts worker returned non-2xx HTTP ${status}" >&2
             exit 1
           fi
-
-          echo "Subscription gifts worker completed with HTTP ${status}"
